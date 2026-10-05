@@ -1,0 +1,15 @@
+#pragma once
+
+#include "broportal/backend.h"
+#include "broportal/dbus_helpers.h"
+#include "broportal/filechooser.h"
+#include "broportal/globalshortcuts.h"
+#include "broportal/inhibit.h"
+#include "broportal/openuri.h"
+#include "broportal/remotedesktop.h"
+#include "broportal/request.h"
+#include "broportal/screencast.h"
+#include "broportal/screenshot.h"
+#include "broportal/session.h"
+#include "broportal/settings.h"
+#include "broportal/types.h"
