@@ -80,8 +80,13 @@ int main() {
         p << "[portal]\nDBusName=" << f.config.bus_name
           << "\nInterfaces=org.freedesktop.impl.portal.Settings;org.freedesktop.impl.portal.FileChooser;\n"
              "UseIn=bro\n";
-        std::ofstream c(root / "config" / "xdg-desktop-portal" / "bro-portals.conf");
-        c << "[preferred]\ndefault=bro\n";
+        // x-d-p 1.18 reads portals.conf beside the portal files when
+        // XDG_DESKTOP_PORTAL_DIR is set; later versions read the config dirs.
+        // Settings ignores the deprecated UseIn fallback, so both are needed.
+        for (const fs::path& dir : {root / "config" / "xdg-desktop-portal", root / "portals"}) {
+            std::ofstream c(dir / "bro-portals.conf");
+            c << "[preferred]\ndefault=bro\n";
+        }
     }
     const std::string log = (root / "xdp.log").string();
 
