@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace broportal {
@@ -46,10 +47,12 @@ public:
     ~RemoteDesktopInterface();
 
     void set_input_listener(RemoteDesktopInputListener listener) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         listener_ = std::move(listener);
     }
 
     void set_start_callback(RemoteDesktopStartCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         start_callback_ = std::move(callback);
     }
 
@@ -57,7 +60,10 @@ public:
     // refused (AccessDenied) for any other session or device.
     bool input_allowed(const ObjectPath& session, DeviceType device) const;
 
-    const RemoteDesktopInputListener& input_listener() const noexcept { return listener_; }
+    RemoteDesktopInputListener input_listener() const {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        return listener_;
+    }
 
     ResponseCode create_session(
         const ObjectPath& handle,
@@ -120,6 +126,7 @@ public:
 
 private:
     PortalBackend& backend_;
+    mutable std::mutex cb_mutex_;
     RemoteDesktopInputListener listener_;
     RemoteDesktopStartCallback start_callback_;
 };

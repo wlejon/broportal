@@ -73,16 +73,21 @@ Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.S
 default=bro
 ```
 
-Two things to know:
+Thread safety and non-blocking execution:
 
-- **One thread drives the connection.** sd-bus connections are not
-  thread-safe. With `run_in_background()`, the setters that emit signals
-  (`set_setting`, `notify_state_changed`, `activate_shortcut`, ...) race the
-  dispatch thread; call them from the thread that dispatches, or dispatch
-  from your own loop (`process()` / `wait()`). Set callbacks before
-  `start()`, or at least never while a request is being dispatched.
-- **Callbacks answer synchronously.** A callback that shows a dialog holds the
-  reply, and the connection, until it returns.
+- **Thread-safe connection and setters.** Signal-emitting setters
+  (`set_setting`, `notify_state_changed`, `activate_shortcut`, `complete`,
+  `close`, ...) are thread-safe and can be called from any thread while
+  `run_in_background()` dispatches on its worker thread. `PortalBackend`
+  serializes access to sd-bus with an internal recursive mutex and eventfd wake
+  mechanism.
+- **Thread-safe callback swapping.** Handlers and listeners on all portal
+  interfaces are protected by internal mutexes; swapping them mid-dispatch is
+  safe and race-free.
+- **Non-blocking callback execution.** Portal method requests (file pickers,
+  screenshots, screencasting, remote desktop, URI opening) are offloaded to
+  a background worker pool, allowing slow or modal UI dialogs to run without
+  blocking the D-Bus connection or delaying other portal requests.
 
 ## Building
 
@@ -121,4 +126,5 @@ nothing touches the session bus of the machine running them.
 | test_filechooser, test_screenshot, test_screencast, test_remotedesktop, test_openuri | Linux | a separate client connection and `gdbus`: the errors without a host, the host's answers relayed, options parsed, fds passed (same inode), input refused without a grant |
 | test_settings, test_inhibit, test_globalshortcuts | Linux | `gdbus` with one thread dispatching the backend; signals received on a separate connection |
 | test_full_backend | Linux | introspection of all eight interfaces, `version` properties, the name released on `stop()` |
+| test_concurrency | Linux | multithreaded signal emission, mid-dispatch callback swapping, and non-blocking asynchronous modal dialog responses |
 | test_xdp_frontend | Linux | the distribution's **xdg-desktop-portal** in front of the backend: `org.freedesktop.portal.Settings.ReadOne` and a `FileChooser.OpenFile` request answered through it |

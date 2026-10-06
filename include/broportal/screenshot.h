@@ -4,6 +4,7 @@
 #include "broportal/types.h"
 
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -46,16 +47,19 @@ public:
     ~ScreenshotInterface();
 
     void set_screenshot_callback(ScreenshotCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         screenshot_callback_ = std::move(callback);
     }
 
     void set_pick_color_callback(PickColorCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         pick_color_callback_ = std::move(callback);
     }
 
     // A preselected answer for PickColor when no callback is set. With neither,
     // PickColor (like Screenshot without a callback) answers OtherError.
     void set_default_color(const RgbColor& color) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         default_color_ = color;
     }
 
@@ -89,6 +93,7 @@ public:
 
 private:
     PortalBackend& backend_;
+    mutable std::mutex cb_mutex_;
     ScreenshotCallback screenshot_callback_;
     PickColorCallback pick_color_callback_;
     std::optional<RgbColor> default_color_;

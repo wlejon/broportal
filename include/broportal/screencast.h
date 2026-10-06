@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace broportal {
@@ -45,6 +46,7 @@ public:
     ~ScreenCastInterface();
 
     void set_negotiate_callback(ScreenCastNegotiateCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         negotiate_callback_ = std::move(callback);
     }
 
@@ -87,6 +89,7 @@ public:
 
 private:
     PortalBackend& backend_;
+    mutable std::mutex cb_mutex_;
     ScreenCastNegotiateCallback negotiate_callback_;
 };
 

@@ -1,12 +1,87 @@
 #include "broportal/backend.h"
 
+#if defined(__linux__)
+#include <sys/eventfd.h>
+#include <poll.h>
+#include <unistd.h>
+#endif
+
 #include <iostream>
+#include <queue>
+#include <condition_variable>
 
 namespace broportal {
+
+class PortalBackend::WorkerPool {
+public:
+    explicit WorkerPool(size_t threads = 4) {
+        for (size_t i = 0; i < threads; ++i) {
+            workers_.emplace_back([this]() {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(mu_);
+                        cv_.wait(lock, [this]() { return stop_ || !tasks_.empty(); });
+                        if (stop_ && tasks_.empty()) return;
+                        task = std::move(tasks_.front());
+                        tasks_.pop();
+                    }
+                    if (task) {
+                        try {
+                            task();
+                        } catch (...) {
+                            // Suppress worker exceptions
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    ~WorkerPool() {
+        stop();
+    }
+
+    void post(std::function<void()> task) {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (stop_) return;
+            tasks_.push(std::move(task));
+        }
+        cv_.notify_one();
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (stop_) return;
+            stop_ = true;
+        }
+        cv_.notify_all();
+        for (auto& w : workers_) {
+            if (w.joinable()) {
+                w.join();
+            }
+        }
+        workers_.clear();
+    }
+
+private:
+    std::mutex mu_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+    std::queue<std::function<void()>> tasks_;
+    std::vector<std::thread> workers_;
+};
 
 PortalBackend::PortalBackend(std::unique_ptr<dbus::Bus> bus, BackendConfig config)
     : bus_(std::move(bus)),
       config_(std::move(config)) {
+#if defined(__linux__)
+    wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+#endif
+    worker_pool_ = std::make_unique<WorkerPool>(4);
+
     file_chooser_ = std::make_unique<FileChooserInterface>(*this);
     screenshot_ = std::make_unique<ScreenshotInterface>(*this);
     screencast_ = std::make_unique<ScreenCastInterface>(*this);
@@ -19,6 +94,12 @@ PortalBackend::PortalBackend(std::unique_ptr<dbus::Bus> bus, BackendConfig confi
 
 PortalBackend::~PortalBackend() {
     stop();
+#if defined(__linux__)
+    if (wake_fd_ >= 0) {
+        close(wake_fd_);
+        wake_fd_ = -1;
+    }
+#endif
 }
 
 std::unique_ptr<PortalBackend> PortalBackend::create_on_user_bus(
@@ -86,6 +167,7 @@ void PortalBackend::unregister_interfaces() {
 }
 
 bool PortalBackend::start(std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
     if (running_) return true;
 
     if (!bus_ || !bus_->is_valid()) {
@@ -116,10 +198,16 @@ void PortalBackend::stop() {
 
     stop_background();
 
+    if (worker_pool_) {
+        worker_pool_->stop();
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+
     // Close all open requests and sessions
     std::vector<std::shared_ptr<Request>> reqs_to_close;
     {
-        std::lock_guard<std::mutex> lock(req_mutex_);
+        std::lock_guard<std::mutex> rlock(req_mutex_);
         for (auto& [_, req] : requests_) {
             if (req) reqs_to_close.push_back(req);
         }
@@ -131,7 +219,7 @@ void PortalBackend::stop() {
 
     std::vector<std::shared_ptr<Session>> sess_to_close;
     {
-        std::lock_guard<std::mutex> lock(sess_mutex_);
+        std::lock_guard<std::mutex> slock(sess_mutex_);
         for (auto& [_, sess] : sessions_) {
             if (sess) sess_to_close.push_back(sess);
         }
@@ -151,11 +239,21 @@ void PortalBackend::stop() {
 }
 
 int PortalBackend::process() {
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
     return bus_ ? bus_->process() : -1;
 }
 
 int PortalBackend::wait(uint64_t timeout_usec) {
     return bus_ ? bus_->wait(timeout_usec) : -1;
+}
+
+void PortalBackend::wake() {
+#if defined(__linux__)
+    if (wake_fd_ >= 0) {
+        uint64_t val = 1;
+        (void)::write(wake_fd_, &val, sizeof(val));
+    }
+#endif
 }
 
 bool PortalBackend::run_in_background() {
@@ -164,12 +262,48 @@ bool PortalBackend::run_in_background() {
     bg_stop_.store(false);
     bg_thread_ = std::thread([this]() {
         while (!bg_stop_.load()) {
-            if (bus_) {
-                while (bus_->process() > 0) {}
-                bus_->wait(50000); // 50ms wait
-            } else {
-                break;
+            {
+                std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+                if (bus_ && bus_->is_valid()) {
+                    while (bus_->process() > 0) {}
+                }
             }
+            if (bg_stop_.load()) break;
+
+#if defined(__linux__)
+            pollfd pfds[2];
+            int num_fds = 0;
+            {
+                std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+                if (bus_ && bus_->is_valid()) {
+                    pfds[0].fd = bus_->get_fd();
+                    pfds[0].events = POLLIN | POLLPRI;
+                    num_fds = 1;
+                }
+            }
+            if (wake_fd_ >= 0) {
+                pfds[num_fds].fd = wake_fd_;
+                pfds[num_fds].events = POLLIN;
+                num_fds++;
+            }
+
+            if (num_fds == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+
+            int r = ::poll(pfds, num_fds, 50); // 50ms timeout
+            if (r > 0) {
+                for (int i = 0; i < num_fds; ++i) {
+                    if (pfds[i].fd == wake_fd_ && (pfds[i].revents & POLLIN)) {
+                        uint64_t val = 0;
+                        (void)::read(wake_fd_, &val, sizeof(val));
+                    }
+                }
+            }
+#else
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+#endif
         }
     });
 
@@ -179,10 +313,94 @@ bool PortalBackend::run_in_background() {
 void PortalBackend::stop_background() {
     if (bg_thread_.joinable()) {
         bg_stop_.store(true);
-        if (bus_) {
-            bus_->flush();
+        wake();
+        {
+            std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+            if (bus_) {
+                bus_->flush();
+            }
         }
         bg_thread_.join();
+    }
+}
+
+bool PortalBackend::emit_signal(
+    const std::string& path,
+    const std::string& interface,
+    const std::string& member,
+    std::function<void(dbus::Message&)> build_args,
+    std::string* error) {
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+    if (!bus_ || !bus_->is_valid()) {
+        if (error) *error = "Invalid bus connection";
+        return false;
+    }
+    bool ok = bus_->emit_signal(path, interface, member, std::move(build_args), error);
+    if (ok) {
+        bus_->flush();
+        wake();
+    }
+    return ok;
+}
+
+bool PortalBackend::send_method_reply_and_unref(
+    sd_bus_message* request_msg,
+    std::function<void(dbus::Message&)> build_reply,
+    std::string* error) {
+    if (!request_msg) return false;
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+    if (!bus_ || !bus_->is_valid()) {
+        if (error) *error = "Invalid bus connection";
+        sd_bus_message_unref(request_msg);
+        return false;
+    }
+
+    sd_bus_message* reply = nullptr;
+    int r = sd_bus_message_new_method_return(request_msg, &reply);
+    if (r < 0) {
+        if (error) *error = strerror(-r);
+        sd_bus_message_unref(request_msg);
+        return false;
+    }
+
+    dbus::Message reply_msg(reply, true);
+    if (build_reply) {
+        build_reply(reply_msg);
+    }
+
+    int send_r = sd_bus_send(bus_->raw(), reply_msg.raw(), nullptr);
+    if (send_r < 0) {
+        if (error) *error = strerror(-send_r);
+    } else {
+        bus_->flush();
+    }
+    sd_bus_message_unref(request_msg);
+    wake();
+    return send_r >= 0;
+}
+
+bool PortalBackend::send_method_error_and_unref(
+    sd_bus_message* request_msg,
+    const std::string& name,
+    const std::string& message) {
+    if (!request_msg) return false;
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+    if (!bus_ || !bus_->is_valid()) {
+        sd_bus_message_unref(request_msg);
+        return false;
+    }
+    sd_bus_reply_method_errorf(request_msg, name.c_str(), "%s", message.c_str());
+    bus_->flush();
+    sd_bus_message_unref(request_msg);
+    wake();
+    return true;
+}
+
+void PortalBackend::post_worker(std::function<void()> task) {
+    if (worker_pool_) {
+        worker_pool_->post(std::move(task));
+    } else if (task) {
+        task();
     }
 }
 
@@ -191,7 +409,7 @@ std::shared_ptr<Request> PortalBackend::create_request(
     const std::string& app_id) {
     if (!bus_ || handle.path.empty()) return nullptr;
 
-    auto req = std::make_shared<Request>(*bus_, handle, app_id);
+    auto req = std::make_shared<Request>(*this, handle, app_id);
     std::string path_str = handle.path;
 
     {
@@ -241,7 +459,7 @@ std::shared_ptr<Session> PortalBackend::create_session(
     SessionType type) {
     if (!bus_ || session_handle.path.empty()) return nullptr;
 
-    auto sess = std::make_shared<Session>(*bus_, session_handle, app_id, type);
+    auto sess = std::make_shared<Session>(*this, session_handle, app_id, type);
     std::string path_str = session_handle.path;
 
     {

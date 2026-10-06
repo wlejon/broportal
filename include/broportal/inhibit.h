@@ -42,11 +42,13 @@ public:
     ~InhibitInterface();
 
     void set_inhibit_change_listener(InhibitChangeListener listener) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         listener_ = std::move(listener);
     }
 
     // Called when a monitor acknowledges a QueryEnd (QueryEndResponse).
     void set_query_end_listener(std::function<void(const ObjectPath& session_handle)> listener) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         query_end_listener_ = std::move(listener);
     }
 
@@ -80,6 +82,7 @@ public:
 private:
     PortalBackend& backend_;
     mutable std::mutex mutex_;
+    mutable std::mutex cb_mutex_;
     std::map<std::string, InhibitEntry> inhibitions_;
     std::set<std::string> active_monitors_;
     InhibitChangeListener listener_;

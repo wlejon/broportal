@@ -36,6 +36,9 @@ void InhibitInterface::inhibit(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         inhibitions_[handle.path] = entry;
+    }
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         listener_copy = listener_;
     }
 
@@ -58,11 +61,16 @@ void InhibitInterface::inhibit(
                     removed_entry = it->second;
                     inhibitions_.erase(it);
                     found = true;
-                    cb = listener_;
                 }
             }
-            if (found && cb) {
-                cb(false, removed_entry);
+            if (found) {
+                {
+                    std::lock_guard<std::mutex> lock(cb_mutex_);
+                    cb = listener_;
+                }
+                if (cb) {
+                    cb(false, removed_entry);
+                }
             }
             // This replaced the backend's own close callback: drop it from
             // the backend's registry too.
@@ -109,8 +117,13 @@ void InhibitInterface::query_end_response(const ObjectPath& session_handle) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!active_monitors_.contains(session_handle.path)) return;
     }
-    if (query_end_listener_) {
-        query_end_listener_(session_handle);
+    std::function<void(const ObjectPath&)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = query_end_listener_;
+    }
+    if (cb) {
+        cb(session_handle);
     }
 }
 
@@ -126,7 +139,7 @@ void InhibitInterface::notify_state_changed(bool screensaver_active, SessionStat
     state_map["session-state"] = Variant(static_cast<uint32_t>(state));
 
     for (const auto& mon_path : monitors) {
-        backend_.bus().emit_signal(
+        backend_.emit_signal(
             "/org/freedesktop/portal/desktop",
             "org.freedesktop.impl.portal.Inhibit",
             "StateChanged",

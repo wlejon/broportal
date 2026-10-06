@@ -4,6 +4,7 @@
 #include "broportal/types.h"
 
 #include <functional>
+#include <mutex>
 #include <string>
 
 namespace broportal {
@@ -30,10 +31,12 @@ public:
     ~OpenURIInterface();
 
     void set_open_uri_callback(OpenUriCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         open_uri_callback_ = std::move(callback);
     }
 
     void set_open_file_callback(OpenFileCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         open_file_callback_ = std::move(callback);
     }
 
@@ -61,6 +64,7 @@ public:
 
 private:
     PortalBackend& backend_;
+    mutable std::mutex cb_mutex_;
     OpenUriCallback open_uri_callback_;
     OpenFileCallback open_file_callback_;
 };

@@ -1,4 +1,5 @@
 #include "broportal/session.h"
+#include "broportal/backend.h"
 
 #include <iostream>
 
@@ -11,6 +12,21 @@ static const sd_bus_vtable session_vtable[] = {
     SD_BUS_PROPERTY("version", "u", &Session::dbus_get_property, 0, SD_BUS_VTABLE_PROPERTY_CONST),
     SD_BUS_VTABLE_END
 };
+
+Session::Session(
+    PortalBackend& backend,
+    const ObjectPath& session_handle,
+    const std::string& app_id,
+    SessionType type,
+    CloseCallback on_close)
+    : backend_(&backend),
+      bus_(&backend.bus()),
+      session_handle_(session_handle),
+      app_id_(app_id),
+      type_(type),
+      on_close_(std::move(on_close)) {
+    register_vtable();
+}
 
 Session::Session(
     dbus::Bus& bus,
@@ -30,18 +46,22 @@ Session::~Session() {
     close();
 }
 
-Session::Session(Session&& other) noexcept
-    : bus_(other.bus_),
-      session_handle_(std::move(other.session_handle_)),
-      app_id_(std::move(other.app_id_)),
-      session_id_(std::move(other.session_id_)),
-      type_(other.type_),
-      on_close_(std::move(other.on_close_)),
-      slot_(std::move(other.slot_)),
-      closed_(other.closed_),
-      context_(std::move(other.context_)) {
+Session::Session(Session&& other) noexcept {
+    std::lock_guard<std::mutex> lock(other.mu_);
+    backend_ = other.backend_;
+    bus_ = other.bus_;
+    session_handle_ = std::move(other.session_handle_);
+    app_id_ = std::move(other.app_id_);
+    session_id_ = std::move(other.session_id_);
+    type_ = other.type_;
+    on_close_ = std::move(other.on_close_);
+    slot_ = std::move(other.slot_);
+    closed_.store(other.closed_.load());
+    context_ = std::move(other.context_);
+
+    other.backend_ = nullptr;
     other.bus_ = nullptr;
-    other.closed_ = true;
+    other.closed_.store(true);
     if (slot_.is_valid()) {
         sd_bus_slot_set_userdata(slot_.get(), this);
     }
@@ -50,6 +70,8 @@ Session::Session(Session&& other) noexcept
 Session& Session::operator=(Session&& other) noexcept {
     if (this != &other) {
         close();
+        std::lock_guard<std::mutex> lock(other.mu_);
+        backend_ = other.backend_;
         bus_ = other.bus_;
         session_handle_ = std::move(other.session_handle_);
         app_id_ = std::move(other.app_id_);
@@ -57,11 +79,12 @@ Session& Session::operator=(Session&& other) noexcept {
         type_ = other.type_;
         on_close_ = std::move(other.on_close_);
         slot_ = std::move(other.slot_);
-        closed_ = other.closed_;
+        closed_.store(other.closed_.load());
         context_ = std::move(other.context_);
 
+        other.backend_ = nullptr;
         other.bus_ = nullptr;
-        other.closed_ = true;
+        other.closed_.store(true);
         if (slot_.is_valid()) {
             sd_bus_slot_set_userdata(slot_.get(), this);
         }
@@ -80,10 +103,12 @@ void Session::register_vtable() {
 }
 
 void Session::set_context(const std::string& key, std::any value) {
+    std::lock_guard<std::mutex> lock(mu_);
     context_[key] = std::move(value);
 }
 
 std::any Session::get_context(const std::string& key) const {
+    std::lock_guard<std::mutex> lock(mu_);
     auto it = context_.find(key);
     if (it != context_.end()) {
         return it->second;
@@ -92,24 +117,35 @@ std::any Session::get_context(const std::string& key) const {
 }
 
 bool Session::has_context(const std::string& key) const {
+    std::lock_guard<std::mutex> lock(mu_);
     return context_.find(key) != context_.end();
 }
 
 void Session::close() {
-    if (closed_) return;
-    closed_ = true;
+    CloseCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (closed_.exchange(true)) return;
 
-    if (bus_ && !session_handle_.path.empty()) {
-        bus_->emit_signal(
-            session_handle_.path,
-            "org.freedesktop.impl.portal.Session",
-            "Closed");
+        if (!session_handle_.path.empty()) {
+            if (backend_) {
+                backend_->emit_signal(
+                    session_handle_.path,
+                    "org.freedesktop.impl.portal.Session",
+                    "Closed");
+            } else if (bus_) {
+                bus_->emit_signal(
+                    session_handle_.path,
+                    "org.freedesktop.impl.portal.Session",
+                    "Closed");
+            }
+        }
+
+        slot_.reset();
+        cb = std::move(on_close_);
     }
 
-    slot_.reset();
-
-    if (on_close_) {
-        auto cb = std::move(on_close_);
+    if (cb) {
         cb(*this);
     }
 }

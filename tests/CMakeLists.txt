@@ -30,6 +30,7 @@ if(BROPORTAL_LINUX)
     broportal_test(test_openuri)
     broportal_test(test_globalshortcuts)
     broportal_test(test_full_backend)
+    broportal_test(test_concurrency)
     # The real xdg-desktop-portal frontend in front of the backend.
     broportal_test(test_xdp_frontend TIMEOUT 120)
 else()

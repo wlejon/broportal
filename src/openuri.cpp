@@ -22,8 +22,14 @@ ResponseCode OpenURIInterface::open_uri(
     const std::string& uri,
     const VariantMap& options,
     VariantMap& results) {
-    if (open_uri_callback_) {
-        return open_uri_callback_(handle, app_id, uri, options, results);
+    OpenUriCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = open_uri_callback_;
+    }
+
+    if (cb) {
+        return cb(handle, app_id, uri, options, results);
     }
 
     // Nothing opened the URI: no host handler is set.
@@ -37,8 +43,14 @@ ResponseCode OpenURIInterface::open_file(
     int fd,
     const VariantMap& options,
     VariantMap& results) {
-    if (open_file_callback_) {
-        return open_file_callback_(handle, app_id, fd, options, results);
+    OpenFileCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = open_file_callback_;
+    }
+
+    if (cb) {
+        return cb(handle, app_id, fd, options, results);
     }
 
     // Nothing opened the file: no host handler is set.
@@ -65,19 +77,21 @@ int OpenURIInterface::dbus_open_uri(sd_bus_message* m, void* userdata, sd_bus_er
     }
 
     auto req = self->backend_.create_request(handle, app_id);
-    VariantMap results;
-    ResponseCode code = self->open_uri(handle, app_id, parent_window, uri, options, results);
+    sd_bus_message_ref(m);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+    self->backend_.post_worker([self, m, req, handle, app_id, parent_window, uri, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->open_uri(handle, app_id, parent_window, uri, options, results);
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    if (req) req->close();
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+        if (req) req->close();
+    });
+
+    return 1;
 }
 
 int OpenURIInterface::dbus_open_file(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {
@@ -99,19 +113,21 @@ int OpenURIInterface::dbus_open_file(sd_bus_message* m, void* userdata, sd_bus_e
     }
 
     auto req = self->backend_.create_request(handle, app_id);
-    VariantMap results;
-    ResponseCode code = self->open_file(handle, app_id, parent_window, ufd.fd, options, results);
+    sd_bus_message_ref(m);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+    self->backend_.post_worker([self, m, req, handle, app_id, parent_window, fd = ufd.fd, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->open_file(handle, app_id, parent_window, fd, options, results);
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    if (req) req->close();
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+        if (req) req->close();
+    });
+
+    return 1;
 }
 
 } // namespace broportal

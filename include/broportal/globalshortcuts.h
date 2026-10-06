@@ -30,6 +30,7 @@ public:
     // grabbed (each with a "trigger_description"). Without a callback,
     // BindShortcuts answers OtherError.
     void set_bind_shortcuts_callback(BindShortcutsCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         bind_callback_ = std::move(callback);
     }
 
@@ -38,6 +39,7 @@ public:
     void set_configure_callback(std::function<void(const ObjectPath& session_handle,
                                                    const std::string& parent_window,
                                                    const VariantMap& options)> callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         configure_callback_ = std::move(callback);
     }
 
@@ -98,6 +100,7 @@ public:
 private:
     PortalBackend& backend_;
     mutable std::mutex mutex_;
+    mutable std::mutex cb_mutex_;
     std::map<std::string, ShortcutList> session_shortcuts_;
     BindShortcutsCallback bind_callback_;
     std::function<void(const ObjectPath&, const std::string&, const VariantMap&)> configure_callback_;

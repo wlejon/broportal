@@ -54,16 +54,19 @@ ResponseCode GlobalShortcutsInterface::bind_shortcuts(
     if (!session || session->type() != SessionType::GlobalShortcuts) {
         return ResponseCode::OtherError;
     }
-    // Only the compositor can grab keys and say which trigger it assigned;
-    // without it nothing would ever fire, so binding fails instead of
-    // echoing the app's wishes back as if they were bound.
-    if (!bind_callback_) {
+    BindShortcutsCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = bind_callback_;
+    }
+
+    if (!cb) {
         return ResponseCode::OtherError;
     }
 
     ShortcutList bound;
-    ResponseCode code = bind_callback_(handle, session_handle, app_id.empty() ? session->app_id() : app_id,
-                                       shortcuts, bound, results);
+    ResponseCode code = cb(handle, session_handle, app_id.empty() ? session->app_id() : app_id,
+                           shortcuts, bound, results);
 
     if (code == ResponseCode::Success) {
         {
@@ -105,14 +108,12 @@ bool GlobalShortcutsInterface::activate_shortcut(
     const std::string& shortcut_id,
     uint64_t timestamp,
     const VariantMap& options) {
-    if (!backend_.bus().is_valid()) return false;
-
     if (timestamp == 0) {
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
     }
 
-    return backend_.bus().emit_signal(
+    return backend_.emit_signal(
         "/org/freedesktop/portal/desktop",
         "org.freedesktop.impl.portal.GlobalShortcuts",
         "Activated",
@@ -129,14 +130,12 @@ bool GlobalShortcutsInterface::deactivate_shortcut(
     const std::string& shortcut_id,
     uint64_t timestamp,
     const VariantMap& options) {
-    if (!backend_.bus().is_valid()) return false;
-
     if (timestamp == 0) {
         auto now = std::chrono::steady_clock::now().time_since_epoch();
         timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
     }
 
-    return backend_.bus().emit_signal(
+    return backend_.emit_signal(
         "/org/freedesktop/portal/desktop",
         "org.freedesktop.impl.portal.GlobalShortcuts",
         "Deactivated",
@@ -151,9 +150,7 @@ bool GlobalShortcutsInterface::deactivate_shortcut(
 bool GlobalShortcutsInterface::notify_shortcuts_changed(
     const ObjectPath& session_handle,
     const ShortcutList& shortcuts) {
-    if (!backend_.bus().is_valid()) return false;
-
-    return backend_.bus().emit_signal(
+    return backend_.emit_signal(
         "/org/freedesktop/portal/desktop",
         "org.freedesktop.impl.portal.GlobalShortcuts",
         "ShortcutsChanged",
@@ -269,10 +266,15 @@ int GlobalShortcutsInterface::dbus_configure_shortcuts(sd_bus_message* m, void* 
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "No such session %s",
                                           session_handle.path.c_str());
     }
-    if (!self->configure_callback_) {
+    std::function<void(const ObjectPath&, const std::string&, const VariantMap&)> cb;
+    {
+        std::lock_guard<std::mutex> lock(self->cb_mutex_);
+        cb = self->configure_callback_;
+    }
+    if (!cb) {
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_NOT_SUPPORTED, "No shortcut configuration UI");
     }
-    self->configure_callback_(session_handle, parent_window, options);
+    cb(session_handle, parent_window, options);
     return sd_bus_reply_method_return(m, "");
 }
 

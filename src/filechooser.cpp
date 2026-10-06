@@ -93,12 +93,20 @@ ResponseCode FileChooserInterface::open_file(
     FileChooserOptions opts = parse_options(options);
     std::vector<std::string> selected_uris;
 
+    FilePickerCallback cb;
+    std::vector<std::string> def_uris;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = callback_;
+        def_uris = default_uris_;
+    }
+
     ResponseCode code = ResponseCode::Success;
-    if (callback_) {
-        code = callback_(handle, app_id, title, opts, selected_uris, results);
-    } else if (!default_uris_.empty()) {
+    if (cb) {
+        code = cb(handle, app_id, title, opts, selected_uris, results);
+    } else if (!def_uris.empty()) {
         // The host preselected the answer (set_default_selected_files).
-        for (const auto& u : default_uris_) {
+        for (const auto& u : def_uris) {
             selected_uris.push_back(normalize_file_uri(u));
         }
         results["uris"] = Variant(selected_uris);
@@ -130,12 +138,20 @@ ResponseCode FileChooserInterface::save_file(
     FileChooserOptions opts = parse_options(options);
     std::vector<std::string> selected_uris;
 
+    FilePickerCallback cb;
+    std::vector<std::string> def_uris;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = callback_;
+        def_uris = default_uris_;
+    }
+
     ResponseCode code = ResponseCode::Success;
-    if (callback_) {
-        code = callback_(handle, app_id, title, opts, selected_uris, results);
-    } else if (!default_uris_.empty()) {
+    if (cb) {
+        code = cb(handle, app_id, title, opts, selected_uris, results);
+    } else if (!def_uris.empty()) {
         // The host preselected the answer (set_default_selected_files).
-        selected_uris.push_back(normalize_file_uri(default_uris_.front()));
+        selected_uris.push_back(normalize_file_uri(def_uris.front()));
         results["uris"] = Variant(selected_uris);
     } else {
         // No picker and no preselection: nobody chose a destination.
@@ -182,23 +198,23 @@ int FileChooserInterface::dbus_open_file(sd_bus_message* m, void* userdata, sd_b
     }
 
     auto request = self->backend_.create_request(handle, app_id);
+    sd_bus_message_ref(m);
 
-    VariantMap results;
-    ResponseCode code = self->open_file(handle, app_id, parent_window, title, options, results);
+    self->backend_.post_worker([self, m, request, handle, app_id, parent_window, title, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->open_file(handle, app_id, parent_window, title, options, results);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        if (request) {
+            request->close();
+        }
+    });
 
-    if (request) {
-        request->close();
-    }
-
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+    return 1;
 }
 
 int FileChooserInterface::dbus_save_file(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {
@@ -220,23 +236,23 @@ int FileChooserInterface::dbus_save_file(sd_bus_message* m, void* userdata, sd_b
     }
 
     auto request = self->backend_.create_request(handle, app_id);
+    sd_bus_message_ref(m);
 
-    VariantMap results;
-    ResponseCode code = self->save_file(handle, app_id, parent_window, title, options, results);
+    self->backend_.post_worker([self, m, request, handle, app_id, parent_window, title, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->save_file(handle, app_id, parent_window, title, options, results);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        if (request) {
+            request->close();
+        }
+    });
 
-    if (request) {
-        request->close();
-    }
-
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+    return 1;
 }
 
 int FileChooserInterface::dbus_save_files(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {
@@ -258,23 +274,23 @@ int FileChooserInterface::dbus_save_files(sd_bus_message* m, void* userdata, sd_
     }
 
     auto request = self->backend_.create_request(handle, app_id);
+    sd_bus_message_ref(m);
 
-    VariantMap results;
-    ResponseCode code = self->save_files(handle, app_id, parent_window, title, options, results);
+    self->backend_.post_worker([self, m, request, handle, app_id, parent_window, title, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->save_files(handle, app_id, parent_window, title, options, results);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        if (request) {
+            request->close();
+        }
+    });
 
-    if (request) {
-        request->close();
-    }
-
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+    return 1;
 }
 
 } // namespace broportal

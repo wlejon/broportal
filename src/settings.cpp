@@ -50,17 +50,15 @@ void SettingsInterface::set_setting(
         observers_copy = observers_;
     }
 
-    if (backend_.bus().is_valid()) {
-        backend_.bus().emit_signal(
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.impl.portal.Settings",
-            "SettingChanged",
-            [&ns, &key, &value](dbus::Message& msg) {
-                msg.append_string(ns);
-                msg.append_string(key);
-                msg.append_variant(value);
-            });
-    }
+    backend_.emit_signal(
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.impl.portal.Settings",
+        "SettingChanged",
+        [&ns, &key, &value](dbus::Message& msg) {
+            msg.append_string(ns);
+            msg.append_string(key);
+            msg.append_variant(value);
+        });
 
     for (const auto& obs : observers_copy) {
         if (obs) {

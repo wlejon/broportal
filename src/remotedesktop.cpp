@@ -76,8 +76,12 @@ ResponseCode RemoteDesktopInterface::start(
         return ResponseCode::OtherError;
     }
     // Control of the keyboard and pointer is the user's to give, through the
-    // host; with no host to ask, nothing is granted.
-    if (!start_callback_) {
+    RemoteDesktopStartCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = start_callback_;
+    }
+    if (!cb) {
         return ResponseCode::OtherError;
     }
 
@@ -87,7 +91,7 @@ ResponseCode RemoteDesktopInterface::start(
     }
     const uint32_t requested = devices;
 
-    ResponseCode code = start_callback_(handle, session_handle, app_id, devices, results);
+    ResponseCode code = cb(handle, session_handle, app_id, devices, results);
     if (code != ResponseCode::Success) {
         return code;
     }
@@ -123,8 +127,13 @@ void RemoteDesktopInterface::notify_keyboard_keycode(
     const VariantMap& /*options*/,
     int32_t keycode,
     uint32_t state) {
-    if (listener_.on_keyboard_keycode) {
-        listener_.on_keyboard_keycode(session, keycode, state);
+    std::function<void(const ObjectPath&, int32_t, uint32_t)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_keyboard_keycode;
+    }
+    if (cb) {
+        cb(session, keycode, state);
     }
 }
 
@@ -133,8 +142,13 @@ void RemoteDesktopInterface::notify_keyboard_keysym(
     const VariantMap& /*options*/,
     int32_t keysym,
     uint32_t state) {
-    if (listener_.on_keyboard_keysym) {
-        listener_.on_keyboard_keysym(session, keysym, state);
+    std::function<void(const ObjectPath&, int32_t, uint32_t)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_keyboard_keysym;
+    }
+    if (cb) {
+        cb(session, keysym, state);
     }
 }
 
@@ -143,8 +157,13 @@ void RemoteDesktopInterface::notify_pointer_motion(
     const VariantMap& /*options*/,
     double dx,
     double dy) {
-    if (listener_.on_pointer_motion) {
-        listener_.on_pointer_motion(session, dx, dy);
+    std::function<void(const ObjectPath&, double, double)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_pointer_motion;
+    }
+    if (cb) {
+        cb(session, dx, dy);
     }
 }
 
@@ -154,8 +173,13 @@ void RemoteDesktopInterface::notify_pointer_motion_absolute(
     uint32_t stream,
     double x,
     double y) {
-    if (listener_.on_pointer_motion_absolute) {
-        listener_.on_pointer_motion_absolute(session, stream, x, y);
+    std::function<void(const ObjectPath&, uint32_t, double, double)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_pointer_motion_absolute;
+    }
+    if (cb) {
+        cb(session, stream, x, y);
     }
 }
 
@@ -164,8 +188,13 @@ void RemoteDesktopInterface::notify_pointer_button(
     const VariantMap& /*options*/,
     int32_t button,
     uint32_t state) {
-    if (listener_.on_pointer_button) {
-        listener_.on_pointer_button(session, button, state);
+    std::function<void(const ObjectPath&, int32_t, uint32_t)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_pointer_button;
+    }
+    if (cb) {
+        cb(session, button, state);
     }
 }
 
@@ -175,8 +204,13 @@ void RemoteDesktopInterface::notify_pointer_axis(
     double dx,
     double dy) {
     bool finish = get_bool_or(options, "finish", false);
-    if (listener_.on_pointer_axis) {
-        listener_.on_pointer_axis(session, dx, dy, finish);
+    std::function<void(const ObjectPath&, double, double, bool)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_pointer_axis;
+    }
+    if (cb) {
+        cb(session, dx, dy, finish);
     }
 }
 
@@ -185,8 +219,13 @@ void RemoteDesktopInterface::notify_pointer_axis_discrete(
     const VariantMap& /*options*/,
     uint32_t axis,
     int32_t steps) {
-    if (listener_.on_pointer_axis_discrete) {
-        listener_.on_pointer_axis_discrete(session, axis, steps);
+    std::function<void(const ObjectPath&, uint32_t, int32_t)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_pointer_axis_discrete;
+    }
+    if (cb) {
+        cb(session, axis, steps);
     }
 }
 
@@ -197,8 +236,13 @@ void RemoteDesktopInterface::notify_touch_down(
     uint32_t slot,
     double x,
     double y) {
-    if (listener_.on_touch_down) {
-        listener_.on_touch_down(session, stream, slot, x, y);
+    std::function<void(const ObjectPath&, uint32_t, uint32_t, double, double)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_touch_down;
+    }
+    if (cb) {
+        cb(session, stream, slot, x, y);
     }
 }
 
@@ -209,8 +253,13 @@ void RemoteDesktopInterface::notify_touch_motion(
     uint32_t slot,
     double x,
     double y) {
-    if (listener_.on_touch_motion) {
-        listener_.on_touch_motion(session, stream, slot, x, y);
+    std::function<void(const ObjectPath&, uint32_t, uint32_t, double, double)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_touch_motion;
+    }
+    if (cb) {
+        cb(session, stream, slot, x, y);
     }
 }
 
@@ -218,8 +267,13 @@ void RemoteDesktopInterface::notify_touch_up(
     const ObjectPath& session,
     const VariantMap& /*options*/,
     uint32_t slot) {
-    if (listener_.on_touch_up) {
-        listener_.on_touch_up(session, slot);
+    std::function<void(const ObjectPath&, uint32_t)> cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = listener_.on_touch_up;
+    }
+    if (cb) {
+        cb(session, slot);
     }
 }
 
@@ -302,19 +356,21 @@ int RemoteDesktopInterface::dbus_start(sd_bus_message* m, void* userdata, sd_bus
     }
 
     auto req = self->backend_.create_request(handle, app_id);
-    VariantMap results;
-    ResponseCode code = self->start(handle, session_handle, app_id, parent_window, options, results);
+    sd_bus_message_ref(m);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+    self->backend_.post_worker([self, m, req, handle, session_handle, app_id, parent_window, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->start(handle, session_handle, app_id, parent_window, options, results);
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    if (req) req->close();
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+        if (req) req->close();
+    });
+
+    return 1;
 }
 
 int RemoteDesktopInterface::dbus_notify_keyboard_keycode(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {

@@ -84,10 +84,15 @@ ResponseCode ScreenCastInterface::start(
     // The compositor owns the screen and creates the PipeWire streams; the
     // backend relays them. Without a host callback there is no stream to
     // offer, so Start fails rather than handing out a node with no frames.
-    if (!negotiate_callback_) {
+    ScreenCastNegotiateCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = negotiate_callback_;
+    }
+    if (!cb) {
         return ResponseCode::OtherError;
     }
-    code = negotiate_callback_(handle, session_handle, app_id, opts, stream_list, results);
+    code = cb(handle, session_handle, app_id, opts, stream_list, results);
 
     if (code == ResponseCode::Success && !results.contains("streams")) {
         results["streams"] = Variant(stream_list);
@@ -187,23 +192,23 @@ int ScreenCastInterface::dbus_start(sd_bus_message* m, void* userdata, sd_bus_er
     }
 
     auto request = self->backend_.create_request(handle, app_id);
+    sd_bus_message_ref(m);
 
-    VariantMap results;
-    ResponseCode code = self->start(handle, session_handle, app_id, parent_window, options, results);
+    self->backend_.post_worker([self, m, request, handle, session_handle, app_id, parent_window, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->start(handle, session_handle, app_id, parent_window, options, results);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        if (request) {
+            request->close();
+        }
+    });
 
-    if (request) {
-        request->close();
-    }
-
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+    return 1;
 }
 
 int ScreenCastInterface::dbus_get_property(

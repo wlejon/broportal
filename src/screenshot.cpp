@@ -35,13 +35,18 @@ ResponseCode ScreenshotInterface::take_screenshot(
 
     // The compositor takes screenshots; the backend only relays. Without a
     // host callback there is no image to give, so the answer is an error,
-    // never a made-up picture.
-    if (!screenshot_callback_) {
+    ScreenshotCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = screenshot_callback_;
+    }
+
+    if (!cb) {
         return ResponseCode::OtherError;
     }
 
     std::string uri;
-    ResponseCode code = screenshot_callback_(handle, app_id, opts, uri, results);
+    ResponseCode code = cb(handle, app_id, opts, uri, results);
     if (code == ResponseCode::Success && !results.contains("uri")) {
         if (uri.empty()) return ResponseCode::OtherError;
         results["uri"] = Variant(uri);
@@ -55,17 +60,25 @@ ResponseCode ScreenshotInterface::pick_color(
     const std::string& /*parent_window*/,
     const VariantMap& options,
     VariantMap& results) {
-    if (pick_color_callback_) {
-        RgbColor color = default_color_.value_or(RgbColor{});
-        ResponseCode code = pick_color_callback_(handle, app_id, options, color, results);
+    PickColorCallback cb;
+    std::optional<RgbColor> def_col;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = pick_color_callback_;
+        def_col = default_color_;
+    }
+
+    if (cb) {
+        RgbColor color = def_col.value_or(RgbColor{});
+        ResponseCode code = cb(handle, app_id, options, color, results);
         if (code == ResponseCode::Success && !results.contains("color")) {
             results["color"] = Variant(color);
         }
         return code;
     }
-    if (default_color_) {
+    if (def_col) {
         // The host preselected the answer (set_default_color).
-        results["color"] = Variant(*default_color_);
+        results["color"] = Variant(*def_col);
         return ResponseCode::Success;
     }
     // Nobody picked a color.
@@ -89,23 +102,23 @@ int ScreenshotInterface::dbus_screenshot(sd_bus_message* m, void* userdata, sd_b
     }
 
     auto request = self->backend_.create_request(handle, app_id);
+    sd_bus_message_ref(m);
 
-    VariantMap results;
-    ResponseCode code = self->take_screenshot(handle, app_id, parent_window, options, results);
+    self->backend_.post_worker([self, m, request, handle, app_id, parent_window, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->take_screenshot(handle, app_id, parent_window, options, results);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        if (request) {
+            request->close();
+        }
+    });
 
-    if (request) {
-        request->close();
-    }
-
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+    return 1;
 }
 
 int ScreenshotInterface::dbus_pick_color(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {
@@ -125,23 +138,23 @@ int ScreenshotInterface::dbus_pick_color(sd_bus_message* m, void* userdata, sd_b
     }
 
     auto request = self->backend_.create_request(handle, app_id);
+    sd_bus_message_ref(m);
 
-    VariantMap results;
-    ResponseCode code = self->pick_color(handle, app_id, parent_window, options, results);
+    self->backend_.post_worker([self, m, request, handle, app_id, parent_window, options = std::move(options)]() {
+        VariantMap results;
+        ResponseCode code = self->pick_color(handle, app_id, parent_window, options, results);
 
-    sd_bus_message* reply = nullptr;
-    int r = sd_bus_message_new_method_return(m, &reply);
-    if (r < 0) return r;
+        self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+            reply_msg.append_uint32(static_cast<uint32_t>(code));
+            reply_msg.append_variant_map(results);
+        });
 
-    dbus::Message reply_msg(reply, true);
-    reply_msg.append_uint32(static_cast<uint32_t>(code));
-    reply_msg.append_variant_map(results);
+        if (request) {
+            request->close();
+        }
+    });
 
-    if (request) {
-        request->close();
-    }
-
-    return sd_bus_send(self->backend_.bus().raw(), reply_msg.raw(), nullptr);
+    return 1;
 }
 
 int ScreenshotInterface::dbus_get_property(

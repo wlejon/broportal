@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <mutex>
+
 namespace broportal {
 
 class PortalBackend;
@@ -36,10 +38,12 @@ public:
     ~FileChooserInterface();
 
     void set_file_picker_callback(FilePickerCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         callback_ = std::move(callback);
     }
 
     void set_default_selected_files(std::vector<std::string> uris) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
         default_uris_ = std::move(uris);
     }
 
@@ -77,6 +81,7 @@ public:
 
 private:
     PortalBackend& backend_;
+    mutable std::mutex cb_mutex_;
     FilePickerCallback callback_;
     std::vector<std::string> default_uris_;
 

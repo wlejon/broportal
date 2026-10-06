@@ -103,6 +103,29 @@ public:
     std::shared_ptr<Session> get_session(const ObjectPath& session_handle);
     void remove_session(const ObjectPath& session_handle);
 
+    // Thread-safe bus operations and async response dispatch
+    std::recursive_mutex& bus_mutex() noexcept { return bus_mutex_; }
+
+    bool emit_signal(
+        const std::string& path,
+        const std::string& interface,
+        const std::string& member,
+        std::function<void(dbus::Message&)> build_args = nullptr,
+        std::string* error = nullptr);
+
+    bool send_method_reply_and_unref(
+        sd_bus_message* request_msg,
+        std::function<void(dbus::Message&)> build_reply,
+        std::string* error = nullptr);
+
+    bool send_method_error_and_unref(
+        sd_bus_message* request_msg,
+        const std::string& name,
+        const std::string& message);
+
+    void post_worker(std::function<void()> task);
+    void wake();
+
 private:
     std::unique_ptr<dbus::Bus> bus_;
     BackendConfig config_;
@@ -128,6 +151,14 @@ private:
 
     mutable std::mutex sess_mutex_;
     std::map<std::string, std::shared_ptr<Session>> sessions_;
+
+    // Concurrency synchronization
+    mutable std::recursive_mutex bus_mutex_;
+    int wake_fd_ = -1;
+
+    // Worker pool for async/non-blocking callbacks
+    class WorkerPool;
+    std::unique_ptr<WorkerPool> worker_pool_;
 
     // Background thread runner
     std::atomic<bool> bg_stop_{false};
