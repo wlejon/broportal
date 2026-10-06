@@ -6,9 +6,9 @@ An [xdg-desktop-portal](https://flatpak.github.io/xdg-desktop-portal/) backend
 in C++20: the `org.freedesktop.impl.portal.*` objects a desktop shell or
 Wayland compositor serves so that the portal frontend can route file pickers,
 screenshots, screen casts, remote input, settings, inhibitors and global
-shortcuts to it. A standalone library with its own CMake and ctest: no
-dependency on bro or bronze, no siblings, nothing vendored; sd-bus (libsystemd)
-is its one dependency.
+shortcuts to it. A standalone library with its own CMake and ctest: on Linux
+it links `brodbus` and `sd-bus` (`libsystemd`); on Windows and macOS it provides
+clean non-Linux stubs.
 
 broportal is the D-Bus half. The pixels, dialogs and key grabs belong to the
 host: each portal that needs one asks the host through a callback, and
@@ -17,17 +17,27 @@ temporary file is passed off as the user's choice, no synthetic screenshot or
 empty PipeWire node is offered, and no shortcut or remote input is granted
 that nobody approved.
 
+## Where it sits
+
+Part of the **[bro](https://github.com/wlejon/bro)** desktop ecosystem (see the
+[ecosystem architecture](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md)).
+Within the desktop stack, `broportal` implements the backend for
+`xdg-desktop-portal`, allowing sandboxed (Flatpak/Snap) and native desktop
+applications to interact with host desktop services (file dialogs, screencasting,
+screenshots, remote desktop, and shortcut bindings). It sits beside `broseat`,
+`brocred`, and `brosys`, sharing the unified `brodbus` layer on Linux.
+
 ## Platform support
 
 Portals exist only on a Linux D-Bus session bus. broportal still configures
-and builds on **Windows and macOS** with no packages, so a cross-platform
-host can link it unconditionally: there it is the value types (`types.h`)
-plus `broportal::available(&why)`, which returns false and says why. The
-other headers `#error` off Linux rather than offering objects that cannot
+and builds on **Windows and macOS** with no external packages, so a cross-platform
+host can link it unconditionally: there it provides the value types (`types.h`)
+plus `broportal::available(&why)`, which returns false and explains why. The
+backend headers `#error` off Linux rather than offering objects that cannot
 work.
 
 | Interface | Served by the backend | Needs from the host | Without the host |
-|-----------|-----------------------|---------------------|------------------|
+|---|---|---|---|
 | FileChooser | `OpenFile`, `SaveFile`, `SaveFiles`; options parsed (multiple, directory, current_name/folder/file, choices) | `set_file_picker_callback`, or preselected `set_default_selected_files` | `OtherError` |
 | Screenshot | `Screenshot`, `PickColor` | `set_screenshot_callback` (a URI), `set_pick_color_callback` or `set_default_color` | `OtherError` |
 | ScreenCast | sessions, `SelectSources` (types, multiple, cursor and persist modes), `Start` relaying streams as `a(ua{sv})` | `set_negotiate_callback`: the PipeWire node ids and their properties | `Start` answers `OtherError` |
@@ -42,7 +52,89 @@ specification**: the stock frontend implements OpenURI itself and never calls
 a backend for it. broportal serves it for hosts that route URI opening
 through their own bus clients.
 
-## Use
+## Building & Dependencies
+
+### Prerequisites
+
+- **CMake 3.24+** and a **C++20** compiler (MSVC 2022+, GCC 12+, Clang 15+, Apple Clang).
+- **Linux**: `libsystemd` (sd-bus >= 246) and `pkg-config` (`libsystemd-dev` on Debian/Ubuntu, `systemd-libs` on Arch).
+  The Linux tests also use `dbus-daemon`, `dbus-send`, `gdbus` (`libglib2.0-bin`), and `xdg-desktop-portal` when present.
+- **Windows / macOS**: No external packages required.
+
+### Resolving brodbus on Linux
+
+On Linux, `broportal` links `brodbus` for unified D-Bus connectivity, message
+serialization, and private bus test fixtures. The build resolves `brodbus`
+automatically in this order:
+
+1. **Existing target**: If `brodbus::brodbus` is already added by a parent project.
+2. **Explicit directory**: `-DBRODBUS_DIR=<path>`.
+3. **Sibling checkout**: `../brodbus` beside `broportal`.
+4. **Submodule checkout**: `third_party/brodbus` within the repository.
+
+### Standalone build
+
+```bash
+# Linux / macOS
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
+
+# Windows (MSVC)
+cmake -B build
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+CMake options:
+- `BROPORTAL_BUILD_TESTS`: Build tests (default `ON` when top-level, `OFF` when included via `add_subdirectory`).
+- `BROPORTAL_COVERAGE`: Instrument the build for gcov coverage (GCC/Clang).
+- `BROPORTAL_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON`; searches `../bronze` or `-DBRONZE_DIR=<path>`).
+
+### Consuming broportal
+
+Downstream projects consume the `broportal::broportal` CMake target. Following
+the ecosystem dependency convention:
+
+#### Sibling layout
+
+When `broportal` is checked out beside your project at `../broportal`:
+
+```cmake
+if(NOT TARGET broportal::broportal)
+    if(DEFINED BROPORTAL_DIR AND EXISTS "${BROPORTAL_DIR}/CMakeLists.txt")
+        # Explicit override supplied via -DBROPORTAL_DIR=<path>
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../broportal/CMakeLists.txt")
+        set(BROPORTAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../broportal" CACHE PATH "broportal source tree")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../broportal/CMakeLists.txt")
+        set(BROPORTAL_DIR "${CMAKE_SOURCE_DIR}/../broportal" CACHE PATH "broportal source tree")
+    endif()
+
+    if(NOT BROPORTAL_DIR OR NOT EXISTS "${BROPORTAL_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "broportal not found beside this repository or at BROPORTAL_DIR")
+    endif()
+
+    add_subdirectory("${BROPORTAL_DIR}" "${CMAKE_BINARY_DIR}/broportal-build" EXCLUDE_FROM_ALL)
+endif()
+```
+
+#### Submodule layout
+
+When `broportal` is vendored as a git submodule under `third_party/broportal`:
+
+```cmake
+if(NOT TARGET broportal::broportal)
+    add_subdirectory(third_party/broportal EXCLUDE_FROM_ALL)
+endif()
+```
+
+#### Linking
+
+```cmake
+target_link_libraries(your_target PRIVATE broportal::broportal)
+```
+
+## API overview
 
 ```cpp
 #include <broportal/broportal.h>
@@ -73,58 +165,58 @@ Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.S
 default=bro
 ```
 
-Thread safety and non-blocking execution:
+### Thread safety and non-blocking execution
 
-- **Thread-safe connection and setters.** Signal-emitting setters
-  (`set_setting`, `notify_state_changed`, `activate_shortcut`, `complete`,
-  `close`, ...) are thread-safe and can be called from any thread while
-  `run_in_background()` dispatches on its worker thread. `PortalBackend`
-  serializes access to sd-bus with an internal recursive mutex and eventfd wake
-  mechanism.
-- **Thread-safe callback swapping.** Handlers and listeners on all portal
+- **Thread-safe connection and setters**: Signal-emitting setters (`set_setting`,
+  `notify_state_changed`, `activate_shortcut`, `complete`, `close`, ...) are
+  thread-safe and can be called from any thread while `run_in_background()`
+  dispatches on its worker thread. `PortalBackend` serializes access to sd-bus
+  with an internal recursive mutex and eventfd wake mechanism.
+- **Thread-safe callback swapping**: Handlers and listeners on all portal
   interfaces are protected by internal mutexes; swapping them mid-dispatch is
   safe and race-free.
-- **Non-blocking callback execution.** Portal method requests (file pickers,
+- **Non-blocking callback execution**: Portal method requests (file pickers,
   screenshots, screencasting, remote desktop, URI opening) are offloaded to
   a background worker pool, allowing slow or modal UI dialogs to run without
   blocking the D-Bus connection or delaying other portal requests.
 
-## Building
-
-Linux needs `pkg-config` and `libsystemd` (`libsystemd-dev` on
-Debian/Ubuntu, `systemd-libs` on Arch). Windows and macOS need nothing beyond
-the compiler. The Linux tests also use `dbus-daemon`, `dbus-send`, `gdbus`
-(`libglib2.0-bin`) and `xdg-desktop-portal` when present.
-
-```bash
-# Linux / macOS
-cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release
-ctest --test-dir build-release --output-on-failure
-
-# Windows (MSVC, Visual Studio generator)
-cmake -B build
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
-```
-
-`-DBROPORTAL_COVERAGE=ON` instruments a GCC/Clang build for gcov.
-
 ## Tests
 
-Real ctests: no `assert()` (`tests/check.h` counts failures in every
-configuration). Exit 77 is a skip, used only when a tool is absent, and the
-test prints the reason. Every Linux test starts its own `dbus-daemon`, so
-nothing touches the session bus of the machine running them.
+Test assertions use `tests/check.h` (active in every configuration, no `assert()`).
+A test that cannot run in the current environment exits code 77 with the reason
+printed, and ctest reports it as skipped. Every Linux test starts its own
+`dbus-daemon` fixture (via `brodbus::PrivateBus`), so tests never touch the
+desktop session bus.
 
-| Test | Where | Oracle |
-|------|-------|--------|
-| test_types | everywhere | the variant types and their D-Bus signatures |
-| test_unavailable | Windows, macOS | `available()` is false with a reason |
-| test_dbus_helpers | Linux | the bus daemon itself (`GetNameOwner`, `NameHasOwner`), `dbus-send` signals |
-| test_request_session | Linux | `gdbus` closing Request and Session objects; Response and Closed signals |
-| test_filechooser, test_screenshot, test_screencast, test_remotedesktop, test_openuri | Linux | a separate client connection and `gdbus`: the errors without a host, the host's answers relayed, options parsed, fds passed (same inode), input refused without a grant |
-| test_settings, test_inhibit, test_globalshortcuts | Linux | `gdbus` with one thread dispatching the backend; signals received on a separate connection |
-| test_full_backend | Linux | introspection of all eight interfaces, `version` properties, the name released on `stop()` |
-| test_concurrency | Linux | multithreaded signal emission, mid-dispatch callback swapping, and non-blocking asynchronous modal dialog responses |
-| test_xdp_frontend | Linux | the distribution's **xdg-desktop-portal** in front of the backend: `org.freedesktop.portal.Settings.ReadOne` and a `FileChooser.OpenFile` request answered through it |
+The test suite contains 16 test suites covering all backend interfaces and integrations:
+
+| Test | Platform | Target / Environment | Oracle |
+|---|---|---|---|
+| `test_types` | everywhere | in-process | Variant types and their D-Bus signatures |
+| `test_unavailable` | Windows, macOS | in-process | `available()` is false with explanatory reason |
+| `test_dbus_helpers` | Linux | private `dbus-daemon` | Bus daemon queries (`GetNameOwner`, `NameHasOwner`), `dbus-send` signals |
+| `test_request_session` | Linux | private `dbus-daemon` + `gdbus` | `gdbus` closing Request and Session objects; Response and Closed signals |
+| `test_filechooser` | Linux | private `dbus-daemon` + client | Separate client connection and `gdbus`: errors without host, host answers relayed, option parsing |
+| `test_screenshot` | Linux | private `dbus-daemon` + client | Screenshot and PickColor callbacks, URI verification, default color handling |
+| `test_screencast` | Linux | private `dbus-daemon` + client | Session negotiation, source selection, stream relays with PipeWire node IDs |
+| `test_remotedesktop` | Linux | private `dbus-daemon` + client | Session devices, start callback, input events, access rejection without grant |
+| `test_settings` | Linux | private `dbus-daemon` + `gdbus` | `Read`, `ReadAll` namespace queries, `SettingChanged` signals |
+| `test_inhibit` | Linux | private `dbus-daemon` + client | Inhibit tracking, `CreateMonitor`, `StateChanged`, `QueryEndResponse` |
+| `test_openuri` | Linux | private `dbus-daemon` + client | URI opening and file opening with file descriptor passing (same inode verification) |
+| `test_globalshortcuts` | Linux | private `dbus-daemon` + client | Shortcut binding sessions, triggers, activation/deactivation signals |
+| `test_full_backend` | Linux | private `dbus-daemon` + introspection | Introspection of all eight interfaces, version properties, name release on `stop()` |
+| `test_concurrency` | Linux | private `dbus-daemon` + worker threads | Multithreaded signal emission, mid-dispatch callback swapping, and non-blocking asynchronous modal dialog responses |
+| `test_xdp_frontend` | Linux | private `dbus-daemon` + real `xdg-desktop-portal` | Distribution's `xdg-desktop-portal` frontend in front of backend: `Settings.ReadOne` and `FileChooser.OpenFile` answered through it |
+| `broportal_test_api` | Linux / Windows (when API enabled) | Bronze runtime | Bronze JavaScript bindings (`broportal_api`) and garbage collection stress testing |
+
+### Test fixtures & CI skipping
+
+- **Private bus fixture**: All Linux tests run against an isolated private
+  `dbus-daemon` instance, preventing interference with host services.
+- **CI skipping**: Tests check for required tools (`dbus-daemon`, `gdbus`,
+  `dbus-send`, and `xdg-desktop-portal`). If a tool is missing, the corresponding
+  test exits 77 (skipped) with the reason logged.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
