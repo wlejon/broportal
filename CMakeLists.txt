@@ -61,6 +61,33 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(BROPORTAL_LINUX ON)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
+
+    if(NOT TARGET brodbus::brodbus)
+        if(DEFINED BRODBUS_DIR AND EXISTS "${BRODBUS_DIR}/CMakeLists.txt")
+            # Explicit BRODBUS_DIR supplied
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../brodbus/CMakeLists.txt")
+            set(BRODBUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../brodbus" CACHE PATH "brodbus source tree")
+        elseif(EXISTS "${CMAKE_SOURCE_DIR}/../brodbus/CMakeLists.txt")
+            set(BRODBUS_DIR "${CMAKE_SOURCE_DIR}/../brodbus" CACHE PATH "brodbus source tree")
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/brodbus/CMakeLists.txt")
+            set(BRODBUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/brodbus" CACHE PATH "brodbus source tree")
+        elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/brodbus/CMakeLists.txt")
+            set(BRODBUS_DIR "${CMAKE_SOURCE_DIR}/third_party/brodbus" CACHE PATH "brodbus source tree")
+        endif()
+
+        if(NOT BRODBUS_DIR OR NOT EXISTS "${BRODBUS_DIR}/CMakeLists.txt")
+            message(FATAL_ERROR
+                "broportal needs brodbus: not found at ${BRODBUS_DIR} or "
+                "${CMAKE_SOURCE_DIR}/third_party/brodbus. Clone https://github.com/wlejon/brodbus next "
+                "to this repo, run `git submodule update --init --recursive`, or override with "
+                "-DBRODBUS_DIR=...")
+        endif()
+
+        set(BRODBUS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        message(STATUS "broportal: brodbus from ${BRODBUS_DIR}")
+        add_subdirectory("${BRODBUS_DIR}" "${CMAKE_BINARY_DIR}/brodbus" EXCLUDE_FROM_ALL)
+    endif()
+
     list(APPEND BROPORTAL_SOURCES
         src/backend.cpp
         src/dbus_helpers.cpp
@@ -92,7 +119,7 @@ broportal_warnings(broportal)
 
 target_link_libraries(broportal PUBLIC Threads::Threads)
 if(BROPORTAL_LINUX)
-    target_link_libraries(broportal PUBLIC PkgConfig::SYSTEMD)
+    target_link_libraries(broportal PUBLIC PkgConfig::SYSTEMD brodbus::brodbus)
 endif()
 
 # --- Standalone Bronze JavaScript API ---

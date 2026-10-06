@@ -1,10 +1,8 @@
-// A private dbus-daemon per test, the backend serving on it, and a separate
-// client connection: the tests never touch the user's session bus. The
-// daemon dies with the test process (PR_SET_PDEATHSIG), even on REQUIRE's exit.
 #pragma once
 
 #include "check.h"
 #include "broportal/backend.h"
+#include "brodbus/private_bus.h"
 
 #include <csignal>
 #include <cstdio>
@@ -16,41 +14,29 @@
 namespace bstest {
 
 struct PrivateBus {
-    pid_t pid = -1;
+    brodbus::PrivateBus bus;
     std::string address;
 
-    PrivateBus() {
-        int fds[2];
-        if (pipe(fds) != 0) return;
-        pid = fork();
-        if (pid == 0) {
-            prctl(PR_SET_PDEATHSIG, SIGTERM);
-            dup2(fds[1], STDOUT_FILENO);
-            close(fds[0]);
-            close(fds[1]);
-            execlp("dbus-daemon", "dbus-daemon", "--session", "--nofork", "--nopidfile", "--print-address=1",
-                   static_cast<char*>(nullptr));
-            _exit(127);
-        }
-        close(fds[1]);
-        char buf[512];
-        ssize_t n = read(fds[0], buf, sizeof buf - 1);
-        close(fds[0]);
-        if (n > 0) {
-            buf[n] = 0;
-            address = buf;
-            while (!address.empty() && (address.back() == '\n' || address.back() == ' ')) address.pop_back();
-        }
-    }
-    ~PrivateBus() {
-        if (pid > 0) {
-            kill(pid, SIGTERM);
-            waitpid(pid, nullptr, 0);
-        }
-    }
+    PrivateBus() : bus(), address(bus.address()) {}
     PrivateBus(const PrivateBus&) = delete;
     PrivateBus& operator=(const PrivateBus&) = delete;
-    bool ok() const { return !address.empty(); }
+
+    PrivateBus(PrivateBus&& other) noexcept
+        : bus(std::move(other.bus)), address(std::move(other.address)) {}
+    PrivateBus& operator=(PrivateBus&& other) noexcept {
+        if (this != &other) {
+            bus = std::move(other.bus);
+            address = std::move(other.address);
+        }
+        return *this;
+    }
+
+    pid_t pid() const noexcept { return bus.pid(); }
+    bool ok() const noexcept { return bus.ok(); }
+    void stop() {
+        bus.stop();
+        address.clear();
+    }
 };
 
 // Backend started and dispatching on its own thread, plus a client connection.

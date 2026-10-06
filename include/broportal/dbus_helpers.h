@@ -5,6 +5,7 @@
 #endif
 
 #include "broportal/types.h"
+#include "brodbus/brodbus.h"
 
 #include <systemd/sd-bus.h>
 #include <systemd/sd-bus-vtable.h>
@@ -16,66 +17,59 @@
 
 namespace broportal::dbus {
 
-class Slot {
-public:
-    Slot() noexcept : slot_(nullptr) {}
-    explicit Slot(sd_bus_slot* slot) noexcept : slot_(slot) {}
-    ~Slot();
-
-    Slot(const Slot&) = delete;
-    Slot& operator=(const Slot&) = delete;
-
-    Slot(Slot&& other) noexcept;
-    Slot& operator=(Slot&& other) noexcept;
-
-    void reset(sd_bus_slot* slot = nullptr) noexcept;
-    sd_bus_slot* release() noexcept;
-    sd_bus_slot* get() const noexcept { return slot_; }
-    bool is_valid() const noexcept { return slot_ != nullptr; }
-    explicit operator bool() const noexcept { return is_valid(); }
-
-private:
-    sd_bus_slot* slot_ = nullptr;
-};
+using Slot = brodbus::Slot;
 
 class Message {
 public:
-    Message() noexcept : msg_(nullptr), owned_(true) {}
+    Message() noexcept : inner_() {}
     explicit Message(sd_bus_message* msg, bool owned = true) noexcept
-        : msg_(msg), owned_(owned) {}
-    ~Message();
+        : inner_(msg, owned) {}
+    explicit Message(brodbus::Message msg) noexcept
+        : inner_(std::move(msg)) {}
+    ~Message() = default;
 
     Message(const Message&) = delete;
     Message& operator=(const Message&) = delete;
 
-    Message(Message&& other) noexcept;
-    Message& operator=(Message&& other) noexcept;
+    Message(Message&& other) noexcept = default;
+    Message& operator=(Message&& other) noexcept = default;
 
-    sd_bus_message* raw() const noexcept { return msg_; }
-    bool is_valid() const noexcept { return msg_ != nullptr; }
+    sd_bus_message* raw() const noexcept { return inner_.raw(); }
+    bool is_valid() const noexcept { return inner_.is_valid(); }
     explicit operator bool() const noexcept { return is_valid(); }
 
-    std::string get_path() const;
-    std::string get_interface() const;
-    std::string get_member() const;
-    std::string get_sender() const;
+    void reset(sd_bus_message* msg = nullptr, bool owned = true) noexcept { inner_.reset(msg, owned); }
+    sd_bus_message* release() noexcept { return inner_.release(); }
+
+    brodbus::Message& inner() noexcept { return inner_; }
+    const brodbus::Message& inner() const noexcept { return inner_; }
+
+    operator brodbus::Message&() noexcept { return inner_; }
+    operator const brodbus::Message&() const noexcept { return inner_; }
+
+    std::string get_path() const { return inner_.get_path(); }
+    std::string get_interface() const { return inner_.get_interface(); }
+    std::string get_member() const { return inner_.get_member(); }
+    std::string get_sender() const { return inner_.get_sender(); }
+    std::string get_destination() const { return inner_.get_destination(); }
 
     // Appending values
-    bool append_basic(char type, const void* value);
-    bool append_bool(bool val);
-    bool append_byte(uint8_t val);
-    bool append_int16(int16_t val);
-    bool append_uint16(uint16_t val);
-    bool append_int32(int32_t val);
-    bool append_uint32(uint32_t val);
-    bool append_int64(int64_t val);
-    bool append_uint64(uint64_t val);
-    bool append_double(double val);
-    bool append_string(const std::string& val);
+    bool append_basic(char type, const void* value) { return inner_.append_basic(type, value); }
+    bool append_bool(bool val) { return inner_.append_bool(val); }
+    bool append_byte(uint8_t val) { return inner_.append_byte(val); }
+    bool append_int16(int16_t val) { return inner_.append_int16(val); }
+    bool append_uint16(uint16_t val) { return inner_.append_uint16(val); }
+    bool append_int32(int32_t val) { return inner_.append_int32(val); }
+    bool append_uint32(uint32_t val) { return inner_.append_uint32(val); }
+    bool append_int64(int64_t val) { return inner_.append_int64(val); }
+    bool append_uint64(uint64_t val) { return inner_.append_uint64(val); }
+    bool append_double(double val) { return inner_.append_double(val); }
+    bool append_string(const std::string& val) { return inner_.append_string(val); }
+    bool append_string(const char* val) { return inner_.append_string(val); }
     bool append_object_path(const ObjectPath& val);
     bool append_unix_fd(const UnixFd& val);
-    bool append_string_list(const std::vector<std::string>& list);
-    bool append_byte_list(const std::vector<uint8_t>& bytes);
+    bool append_string_list(const std::vector<std::string>& list) { return inner_.append_string_list(list); }
+    bool append_byte_list(const std::vector<uint8_t>& bytes) { return inner_.append_byte_list(bytes); }
     bool append_rgb(const RgbColor& color);
     bool append_coord2d(const Coord2D& coord);
     bool append_string_pair_list(const StringPairList& pairs);
@@ -86,21 +80,21 @@ public:
     bool append_settings_map(const SettingsMap& settings);
 
     // Reading values
-    bool read_basic(char type, void* out);
-    bool read_bool(bool* out);
-    bool read_byte(uint8_t* out);
-    bool read_int16(int16_t* out);
-    bool read_uint16(uint16_t* out);
-    bool read_int32(int32_t* out);
-    bool read_uint32(uint32_t* out);
-    bool read_int64(int64_t* out);
-    bool read_uint64(uint64_t* out);
-    bool read_double(double* out);
-    bool read_string(std::string* out);
+    bool read_basic(char type, void* out) { return inner_.read_basic(type, out); }
+    bool read_bool(bool* out) { return inner_.read_bool(out); }
+    bool read_byte(uint8_t* out) { return inner_.read_byte(out); }
+    bool read_int16(int16_t* out) { return inner_.read_int16(out); }
+    bool read_uint16(uint16_t* out) { return inner_.read_uint16(out); }
+    bool read_int32(int32_t* out) { return inner_.read_int32(out); }
+    bool read_uint32(uint32_t* out) { return inner_.read_uint32(out); }
+    bool read_int64(int64_t* out) { return inner_.read_int64(out); }
+    bool read_uint64(uint64_t* out) { return inner_.read_uint64(out); }
+    bool read_double(double* out) { return inner_.read_double(out); }
+    bool read_string(std::string* out) { return inner_.read_string(out); }
     bool read_object_path(ObjectPath* out);
     bool read_unix_fd(UnixFd* out);
-    bool read_string_list(std::vector<std::string>* out);
-    bool read_byte_list(std::vector<uint8_t>* out);
+    bool read_string_list(std::vector<std::string>* out) { return inner_.read_string_list(out); }
+    bool read_byte_list(std::vector<uint8_t>* out) { return inner_.read_byte_list(out); }
     bool read_rgb(RgbColor* out);
     bool read_coord2d(Coord2D* out);
     bool read_string_pair_list(StringPairList* out);
@@ -110,47 +104,51 @@ public:
     bool read_shortcut_list(ShortcutList* out);
     bool read_settings_map(SettingsMap* out);
 
-    int enter_container(char type, const char* contents);
-    int exit_container();
-    int open_container(char type, const char* contents);
-    int close_container();
-    bool at_end(bool complete = false) const;
-    int peek_type(char* type, const char** contents) const;
+    int enter_container(char type, const char* contents = nullptr) { return inner_.enter_container(type, contents); }
+    int exit_container() { return inner_.exit_container(); }
+    int open_container(char type, const char* contents = nullptr) { return inner_.open_container(type, contents); }
+    int close_container() { return inner_.close_container(); }
+    bool at_end(bool complete = false) const { return inner_.at_end(complete); }
+    int peek_type(char* type = nullptr, const char** contents = nullptr) const { return inner_.peek_type(type, contents); }
 
 private:
-    sd_bus_message* msg_ = nullptr;
-    bool owned_ = true;
+    brodbus::Message inner_;
 };
 
 using SignalHandler = std::function<void(Message& msg)>;
 
 class Bus {
 public:
-    Bus() noexcept : bus_(nullptr) {}
-    explicit Bus(sd_bus* bus) noexcept : bus_(bus) {}
-    ~Bus();
+    Bus() noexcept = default;
+    explicit Bus(sd_bus* bus) noexcept : inner_(bus) {}
+    explicit Bus(brodbus::Bus bus) noexcept : inner_(std::move(bus)) {}
+    ~Bus() = default;
 
     Bus(const Bus&) = delete;
     Bus& operator=(const Bus&) = delete;
 
-    Bus(Bus&& other) noexcept;
-    Bus& operator=(Bus&& other) noexcept;
+    Bus(Bus&& other) noexcept = default;
+    Bus& operator=(Bus&& other) noexcept = default;
 
     static std::unique_ptr<Bus> open_user(std::string* error = nullptr);
     static std::unique_ptr<Bus> open_system(std::string* error = nullptr);
     static std::unique_ptr<Bus> open_address(const std::string& address, std::string* error = nullptr);
 
-    sd_bus* raw() const noexcept { return bus_; }
-    bool is_valid() const noexcept { return bus_ != nullptr; }
+    sd_bus* raw() const noexcept { return inner_.raw(); }
+    bool is_valid() const noexcept { return inner_.is_valid(); }
     explicit operator bool() const noexcept { return is_valid(); }
 
-    int get_fd() const noexcept;
-    int process();
-    int wait(uint64_t timeout_usec = UINT64_MAX);
-    int flush();
+    int get_fd() const noexcept { return inner_.get_fd(); }
+    int process() { return inner_.process(); }
+    int wait(uint64_t timeout_usec = UINT64_MAX) { return inner_.wait(timeout_usec); }
+    int flush() { return inner_.flush(); }
 
-    bool request_name(const std::string& name, uint64_t flags = 0, std::string* error = nullptr);
-    bool release_name(const std::string& name, std::string* error = nullptr);
+    bool request_name(const std::string& name, uint64_t flags = 0, std::string* error = nullptr) {
+        return inner_.request_name(name, flags, error);
+    }
+    bool release_name(const std::string& name, std::string* error = nullptr) {
+        return inner_.release_name(name, error);
+    }
 
     Slot add_object_vtable(
         const std::string& path,
@@ -181,8 +179,11 @@ public:
         std::string* error = nullptr,
         uint64_t timeout_usec = 5000000);
 
+    brodbus::Bus& inner() noexcept { return inner_; }
+    const brodbus::Bus& inner() const noexcept { return inner_; }
+
 private:
-    sd_bus* bus_ = nullptr;
+    brodbus::Bus inner_;
 };
 
 } // namespace broportal::dbus

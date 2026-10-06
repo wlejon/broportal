@@ -6,179 +6,26 @@
 
 namespace broportal::dbus {
 
-// --- Slot ---
-
-Slot::~Slot() {
-    reset();
-}
-
-Slot::Slot(Slot&& other) noexcept : slot_(other.slot_) {
-    other.slot_ = nullptr;
-}
-
-Slot& Slot::operator=(Slot&& other) noexcept {
-    if (this != &other) {
-        reset();
-        slot_ = other.slot_;
-        other.slot_ = nullptr;
-    }
-    return *this;
-}
-
-void Slot::reset(sd_bus_slot* slot) noexcept {
-    if (slot_) {
-        sd_bus_slot_unref(slot_);
-    }
-    slot_ = slot;
-}
-
-sd_bus_slot* Slot::release() noexcept {
-    sd_bus_slot* s = slot_;
-    slot_ = nullptr;
-    return s;
-}
-
-// --- Message ---
-
-Message::~Message() {
-    if (owned_ && msg_) {
-        sd_bus_message_unref(msg_);
-    }
-}
-
-Message::Message(Message&& other) noexcept
-    : msg_(other.msg_), owned_(other.owned_) {
-    other.msg_ = nullptr;
-    other.owned_ = false;
-}
-
-Message& Message::operator=(Message&& other) noexcept {
-    if (this != &other) {
-        if (owned_ && msg_) {
-            sd_bus_message_unref(msg_);
-        }
-        msg_ = other.msg_;
-        owned_ = other.owned_;
-        other.msg_ = nullptr;
-        other.owned_ = false;
-    }
-    return *this;
-}
-
-std::string Message::get_path() const {
-    const char* p = sd_bus_message_get_path(msg_);
-    return p ? std::string(p) : std::string();
-}
-
-std::string Message::get_interface() const {
-    const char* i = sd_bus_message_get_interface(msg_);
-    return i ? std::string(i) : std::string();
-}
-
-std::string Message::get_member() const {
-    const char* m = sd_bus_message_get_member(msg_);
-    return m ? std::string(m) : std::string();
-}
-
-std::string Message::get_sender() const {
-    const char* s = sd_bus_message_get_sender(msg_);
-    return s ? std::string(s) : std::string();
-}
-
-int Message::open_container(char type, const char* contents) {
-    return sd_bus_message_open_container(msg_, type, contents);
-}
-
-int Message::close_container() {
-    return sd_bus_message_close_container(msg_);
-}
-
-int Message::enter_container(char type, const char* contents) {
-    return sd_bus_message_enter_container(msg_, type, contents);
-}
-
-int Message::exit_container() {
-    return sd_bus_message_exit_container(msg_);
-}
-
-bool Message::at_end(bool complete) const {
-    return sd_bus_message_at_end(msg_, complete ? 1 : 0) > 0;
-}
-
-int Message::peek_type(char* type, const char** contents) const {
-    return sd_bus_message_peek_type(msg_, type, contents);
-}
-
-bool Message::append_basic(char type, const void* value) {
-    return sd_bus_message_append_basic(msg_, type, value) >= 0;
-}
-
-bool Message::append_bool(bool val) {
-    int b = val ? 1 : 0;
-    return append_basic('b', &b);
-}
-
-bool Message::append_byte(uint8_t val) {
-    return append_basic('y', &val);
-}
-
-bool Message::append_int16(int16_t val) {
-    return append_basic('n', &val);
-}
-
-bool Message::append_uint16(uint16_t val) {
-    return append_basic('q', &val);
-}
-
-bool Message::append_int32(int32_t val) {
-    return append_basic('i', &val);
-}
-
-bool Message::append_uint32(uint32_t val) {
-    return append_basic('u', &val);
-}
-
-bool Message::append_int64(int64_t val) {
-    return append_basic('x', &val);
-}
-
-bool Message::append_uint64(uint64_t val) {
-    return append_basic('t', &val);
-}
-
-bool Message::append_double(double val) {
-    return append_basic('d', &val);
-}
-
-bool Message::append_string(const std::string& val) {
-    const char* str = val.c_str();
-    return append_basic('s', str);
-}
-
 bool Message::append_object_path(const ObjectPath& val) {
-    const char* str = val.path.c_str();
-    return append_basic('o', str);
+    return inner_.append_object_path(val.path);
 }
 
 bool Message::append_unix_fd(const UnixFd& val) {
-    int fd = val.fd;
-    return append_basic('h', &fd);
+    return inner_.append_unix_fd(val.fd);
 }
 
-bool Message::append_string_list(const std::vector<std::string>& list) {
-    if (open_container('a', "s") < 0) return false;
-    for (const auto& item : list) {
-        if (!append_string(item)) return false;
-    }
-    return close_container() >= 0;
+bool Message::read_object_path(ObjectPath* out) {
+    std::string s;
+    if (!inner_.read_object_path(&s)) return false;
+    if (out) out->path = std::move(s);
+    return true;
 }
 
-bool Message::append_byte_list(const std::vector<uint8_t>& bytes) {
-    if (open_container('a', "y") < 0) return false;
-    for (uint8_t b : bytes) {
-        if (!append_byte(b)) return false;
-    }
-    return close_container() >= 0;
+bool Message::read_unix_fd(UnixFd* out) {
+    int fd = -1;
+    if (!inner_.read_unix_fd(&fd)) return false;
+    if (out) out->fd = fd;
+    return true;
 }
 
 bool Message::append_rgb(const RgbColor& color) {
@@ -310,99 +157,6 @@ bool Message::append_variant(const Variant& var) {
 
     if (!ok) return false;
     return close_container() >= 0;
-}
-
-// Reading methods
-bool Message::read_basic(char type, void* out) {
-    return sd_bus_message_read_basic(msg_, type, out) > 0;
-}
-
-bool Message::read_bool(bool* out) {
-    int b = 0;
-    if (!read_basic('b', &b)) return false;
-    if (out) *out = (b != 0);
-    return true;
-}
-
-bool Message::read_byte(uint8_t* out) {
-    return read_basic('y', out);
-}
-
-bool Message::read_int16(int16_t* out) {
-    return read_basic('n', out);
-}
-
-bool Message::read_uint16(uint16_t* out) {
-    return read_basic('q', out);
-}
-
-bool Message::read_int32(int32_t* out) {
-    return read_basic('i', out);
-}
-
-bool Message::read_uint32(uint32_t* out) {
-    return read_basic('u', out);
-}
-
-bool Message::read_int64(int64_t* out) {
-    return read_basic('x', out);
-}
-
-bool Message::read_uint64(uint64_t* out) {
-    return read_basic('t', out);
-}
-
-bool Message::read_double(double* out) {
-    return read_basic('d', out);
-}
-
-bool Message::read_string(std::string* out) {
-    const char* s = nullptr;
-    if (!read_basic('s', &s)) return false;
-    if (out) *out = (s ? s : "");
-    return true;
-}
-
-bool Message::read_object_path(ObjectPath* out) {
-    const char* o = nullptr;
-    if (!read_basic('o', &o)) return false;
-    if (out) out->path = (o ? o : "");
-    return true;
-}
-
-bool Message::read_unix_fd(UnixFd* out) {
-    int fd = -1;
-    if (!read_basic('h', &fd)) return false;
-    if (out) out->fd = fd;
-    return true;
-}
-
-bool Message::read_string_list(std::vector<std::string>* out) {
-    if (enter_container('a', "s") < 0) return false;
-    if (out) out->clear();
-    while (!at_end()) {
-        std::string s;
-        if (!read_string(&s)) {
-            exit_container();
-            return false;
-        }
-        if (out) out->push_back(std::move(s));
-    }
-    return exit_container() >= 0;
-}
-
-bool Message::read_byte_list(std::vector<uint8_t>* out) {
-    if (enter_container('a', "y") < 0) return false;
-    if (out) out->clear();
-    while (!at_end()) {
-        uint8_t b = 0;
-        if (!read_byte(&b)) {
-            exit_container();
-            return false;
-        }
-        if (out) out->push_back(b);
-    }
-    return exit_container() >= 0;
 }
 
 bool Message::read_rgb(RgbColor* out) {
@@ -626,112 +380,22 @@ bool Message::read_variant(Variant* out) {
 
 // --- Bus ---
 
-Bus::~Bus() {
-    if (bus_) {
-        sd_bus_flush_close_unref(bus_);
-        bus_ = nullptr;
-    }
-}
-
-Bus::Bus(Bus&& other) noexcept : bus_(other.bus_) {
-    other.bus_ = nullptr;
-}
-
-Bus& Bus::operator=(Bus&& other) noexcept {
-    if (this != &other) {
-        if (bus_) {
-            sd_bus_flush_close_unref(bus_);
-        }
-        bus_ = other.bus_;
-        other.bus_ = nullptr;
-    }
-    return *this;
-}
-
 std::unique_ptr<Bus> Bus::open_user(std::string* error) {
-    sd_bus* raw_bus = nullptr;
-    int r = sd_bus_open_user(&raw_bus);
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return nullptr;
-    }
-    return std::make_unique<Bus>(raw_bus);
+    auto b = brodbus::Bus::open_user(error);
+    if (!b) return nullptr;
+    return std::make_unique<Bus>(std::move(*b));
 }
 
 std::unique_ptr<Bus> Bus::open_system(std::string* error) {
-    sd_bus* raw_bus = nullptr;
-    int r = sd_bus_open_system(&raw_bus);
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return nullptr;
-    }
-    return std::make_unique<Bus>(raw_bus);
+    auto b = brodbus::Bus::open_system(error);
+    if (!b) return nullptr;
+    return std::make_unique<Bus>(std::move(*b));
 }
 
 std::unique_ptr<Bus> Bus::open_address(const std::string& address, std::string* error) {
-    sd_bus* raw_bus = nullptr;
-    int r = sd_bus_new(&raw_bus);
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return nullptr;
-    }
-    r = sd_bus_set_address(raw_bus, address.c_str());
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        sd_bus_unref(raw_bus);
-        return nullptr;
-    }
-    // A message bus, not a peer-to-peer connection: send Hello, so the
-    // connection gets a unique name and can own names and register matches.
-    r = sd_bus_set_bus_client(raw_bus, 1);
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        sd_bus_unref(raw_bus);
-        return nullptr;
-    }
-    r = sd_bus_start(raw_bus);
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        sd_bus_unref(raw_bus);
-        return nullptr;
-    }
-    return std::make_unique<Bus>(raw_bus);
-}
-
-int Bus::get_fd() const noexcept {
-    return bus_ ? sd_bus_get_fd(bus_) : -1;
-}
-
-int Bus::process() {
-    return bus_ ? sd_bus_process(bus_, nullptr) : -1;
-}
-
-int Bus::wait(uint64_t timeout_usec) {
-    return bus_ ? sd_bus_wait(bus_, timeout_usec) : -1;
-}
-
-int Bus::flush() {
-    return bus_ ? sd_bus_flush(bus_) : -1;
-}
-
-bool Bus::request_name(const std::string& name, uint64_t flags, std::string* error) {
-    if (!bus_) return false;
-    int r = sd_bus_request_name(bus_, name.c_str(), flags);
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return false;
-    }
-    return true;
-}
-
-bool Bus::release_name(const std::string& name, std::string* error) {
-    if (!bus_) return false;
-    int r = sd_bus_release_name(bus_, name.c_str());
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return false;
-    }
-    return true;
+    auto b = brodbus::Bus::open_address(address, error);
+    if (!b) return nullptr;
+    return std::make_unique<Bus>(std::move(*b));
 }
 
 Slot Bus::add_object_vtable(
@@ -740,52 +404,32 @@ Slot Bus::add_object_vtable(
     const sd_bus_vtable* vtable,
     void* userdata,
     std::string* error) {
-    if (!bus_) return Slot();
+    if (!inner_.raw()) {
+        if (error) *error = "bus not connected";
+        return Slot();
+    }
     sd_bus_slot* slot = nullptr;
-    int r = sd_bus_add_object_vtable(bus_, &slot, path.c_str(), interface.c_str(), vtable, userdata);
+    int r = sd_bus_add_object_vtable(inner_.raw(), &slot, path.c_str(), interface.c_str(), vtable, userdata);
     if (r < 0) {
         if (error) *error = strerror(-r);
         return Slot();
     }
     return Slot(slot);
-}
-
-struct MatchContext {
-    SignalHandler handler;
-};
-
-static int on_match_signal(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {
-    auto* ctx = static_cast<MatchContext*>(userdata);
-    if (ctx && ctx->handler) {
-        Message msg(m, false);
-        ctx->handler(msg);
-    }
-    return 0;
 }
 
 Slot Bus::add_match(
     const std::string& match_rule,
     SignalHandler callback,
     std::string* error) {
-    if (!bus_) return Slot();
-    auto ctx = std::make_unique<MatchContext>();
-    ctx->handler = std::move(callback);
-
-    sd_bus_slot* slot = nullptr;
-    int r = sd_bus_add_match(bus_, &slot, match_rule.c_str(), on_match_signal, ctx.get());
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return Slot();
-    }
-
-    // Attach ctx lifecycle to slot userdata if desired, or release ownership
-    // sd_bus_slot_set_userdata cleanup:
-    sd_bus_slot_set_destroy_callback(slot, [](void* ud) {
-        delete static_cast<MatchContext*>(ud);
-    });
-    ctx.release();
-
-    return Slot(slot);
+    return inner_.add_match(
+        match_rule,
+        [cb = std::move(callback)](sd_bus_message* m) {
+            if (cb) {
+                Message msg(m, false);
+                cb(msg);
+            }
+        },
+        error);
 }
 
 bool Bus::emit_signal(
@@ -794,25 +438,13 @@ bool Bus::emit_signal(
     const std::string& member,
     std::function<void(Message&)> build_args,
     std::string* error) {
-    if (!bus_) return false;
-    sd_bus_message* m = nullptr;
-    int r = sd_bus_message_new_signal(bus_, &m, path.c_str(), interface.c_str(), member.c_str());
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return false;
-    }
-
-    Message msg(m, true);
+    brodbus::Message raw_msg = inner_.new_signal(path, interface, member, error);
+    if (!raw_msg) return false;
+    Message msg(std::move(raw_msg));
     if (build_args) {
         build_args(msg);
     }
-
-    r = sd_bus_send(bus_, msg.raw(), nullptr);
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return false;
-    }
-    return true;
+    return inner_.send(msg.inner(), nullptr, error);
 }
 
 bool Bus::call_method(
@@ -824,37 +456,25 @@ bool Bus::call_method(
     std::function<void(Message&)> parse_reply,
     std::string* error,
     uint64_t timeout_usec) {
-    if (!bus_) return false;
-    sd_bus_message* m = nullptr;
-    int r = sd_bus_message_new_method_call(bus_, &m, destination.c_str(), path.c_str(), interface.c_str(), member.c_str());
-    if (r < 0) {
-        if (error) *error = strerror(-r);
-        return false;
-    }
-
-    Message call_msg(m, true);
+    brodbus::Message raw_call = inner_.new_method_call(destination, path, interface, member, error);
+    if (!raw_call) return false;
+    Message call_msg(std::move(raw_call));
     if (build_args) {
         build_args(call_msg);
     }
-
-    sd_bus_error sdbus_err = SD_BUS_ERROR_NULL;
-    sd_bus_message* reply = nullptr;
-    r = sd_bus_call(bus_, call_msg.raw(), timeout_usec, &sdbus_err, &reply);
-    if (r < 0) {
+    brodbus::Error err;
+    brodbus::Message reply = inner_.call(call_msg.inner(), timeout_usec, &err);
+    if (!reply) {
         if (error) {
-            *error = sdbus_err.message ? sdbus_err.message : strerror(-r);
+            std::string s = err.to_string();
+            *error = !s.empty() ? s : "call failed";
         }
-        sd_bus_error_free(&sdbus_err);
         return false;
     }
-
-    if (parse_reply && reply) {
-        Message reply_msg(reply, true);
+    if (parse_reply) {
+        Message reply_msg(std::move(reply));
         parse_reply(reply_msg);
-    } else if (reply) {
-        sd_bus_message_unref(reply);
     }
-
     return true;
 }
 
