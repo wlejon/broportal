@@ -1,6 +1,7 @@
 #pragma once
 
 #include "broportal/dbus_helpers.h"
+#include "broportal/event_queue.h"
 #include "broportal/filechooser.h"
 #include "broportal/globalshortcuts.h"
 #include "broportal/inhibit.h"
@@ -21,6 +22,9 @@
 #include <thread>
 
 namespace broportal {
+
+class PortalBackend;
+using PortalServer = PortalBackend;
 
 struct BackendConfig {
     std::string bus_name = "org.freedesktop.impl.portal.desktop.bro";
@@ -69,6 +73,22 @@ public:
     OpenURIInterface& open_uri() noexcept { return *open_uri_; }
     GlobalShortcutsInterface& global_shortcuts() noexcept { return *global_shortcuts_; }
 
+    // Direct handler convenience setters
+    void set_file_chooser_handler(FilePickerCallback callback) {
+        if (file_chooser_) file_chooser_->set_file_picker_callback(std::move(callback));
+    }
+    void set_screenshot_handler(ScreenshotCallback callback) {
+        if (screenshot_) screenshot_->set_screenshot_callback(std::move(callback));
+    }
+    void set_screencast_handler(ScreenCastNegotiateCallback callback) {
+        if (screencast_) screencast_->set_negotiate_callback(std::move(callback));
+    }
+    void set_open_uri_handler(OpenUriCallback callback) {
+        if (open_uri_) open_uri_->set_open_uri_callback(std::move(callback));
+    }
+
+    PortalEventQueue& events() noexcept { return events_; }
+
     // Request & Session Management
     std::shared_ptr<Request> create_request(
         const ObjectPath& handle,
@@ -87,6 +107,7 @@ private:
     std::unique_ptr<dbus::Bus> bus_;
     BackendConfig config_;
     bool running_ = false;
+    PortalEventQueue events_;
 
     // Interface instances
     std::unique_ptr<FileChooserInterface> file_chooser_;

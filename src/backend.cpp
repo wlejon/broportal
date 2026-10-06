@@ -198,10 +198,14 @@ std::shared_ptr<Request> PortalBackend::create_request(
         std::lock_guard<std::mutex> lock(req_mutex_);
         requests_[path_str] = req;
     }
+    events_.push(PortalEvent{PortalEvent::Kind::RequestCreated, handle, app_id});
 
     req->set_close_callback([this, path_str](Request&) {
-        std::lock_guard<std::mutex> lock(req_mutex_);
-        requests_.erase(path_str);
+        {
+            std::lock_guard<std::mutex> lock(req_mutex_);
+            requests_.erase(path_str);
+        }
+        events_.push(PortalEvent{PortalEvent::Kind::RequestClosed, ObjectPath{path_str}, ""});
     });
 
     return req;
@@ -244,10 +248,14 @@ std::shared_ptr<Session> PortalBackend::create_session(
         std::lock_guard<std::mutex> lock(sess_mutex_);
         sessions_[path_str] = sess;
     }
+    events_.push(PortalEvent{PortalEvent::Kind::SessionCreated, session_handle, app_id});
 
     sess->set_close_callback([this, path_str](Session&) {
-        std::lock_guard<std::mutex> lock(sess_mutex_);
-        sessions_.erase(path_str);
+        {
+            std::lock_guard<std::mutex> lock(sess_mutex_);
+            sessions_.erase(path_str);
+        }
+        events_.push(PortalEvent{PortalEvent::Kind::SessionClosed, ObjectPath{path_str}, ""});
     });
 
     return sess;

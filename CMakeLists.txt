@@ -95,6 +95,32 @@ if(BROPORTAL_LINUX)
     target_link_libraries(broportal PUBLIC PkgConfig::SYSTEMD)
 endif()
 
+# --- Standalone Bronze JavaScript API ---
+option(BROPORTAL_ENABLE_API "Build Bronze JavaScript API" ON)
+if(BROPORTAL_ENABLE_API)
+    if(NOT TARGET bronze_runtime_shared)
+        set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)
+        set(BRONZE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        if(DEFINED BRONZE_DIR AND EXISTS "${BRONZE_DIR}/CMakeLists.txt")
+            # Explicit BRONZE_DIR supplied
+        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../bronze/CMakeLists.txt")
+            set(BRONZE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
+        elseif(EXISTS "${CMAKE_SOURCE_DIR}/../bronze/CMakeLists.txt")
+            set(BRONZE_DIR "${CMAKE_SOURCE_DIR}/../bronze" CACHE PATH "bronze source tree")
+        endif()
+
+        if(NOT BRONZE_DIR OR NOT EXISTS "${BRONZE_DIR}/CMakeLists.txt")
+            message(FATAL_ERROR
+                "bronze not found: check it out beside this repository (../bronze, with ../brass beside it) "
+                "or pass -DBRONZE_DIR=<path>.")
+        endif()
+
+        add_subdirectory("${BRONZE_DIR}" "${CMAKE_BINARY_DIR}/bronze-build" EXCLUDE_FROM_ALL)
+    endif()
+
+    add_subdirectory(src/api)
+endif()
+
 if(BROPORTAL_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

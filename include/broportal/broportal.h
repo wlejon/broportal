@@ -3,6 +3,7 @@
 #include "broportal/availability.h"
 #include "broportal/backend.h"
 #include "broportal/dbus_helpers.h"
+#include "broportal/event_queue.h"
 #include "broportal/filechooser.h"
 #include "broportal/globalshortcuts.h"
 #include "broportal/inhibit.h"
