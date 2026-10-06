@@ -64,6 +64,9 @@ void InhibitInterface::inhibit(
             if (found && cb) {
                 cb(false, removed_entry);
             }
+            // This replaced the backend's own close callback: drop it from
+            // the backend's registry too.
+            backend_.remove_request(ObjectPath{p});
         });
     }
 }
@@ -87,8 +90,11 @@ ResponseCode InhibitInterface::create_monitor(
 
     std::string path_str = session_handle.path;
     sess->set_close_callback([this, path_str](Session&) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        active_monitors_.erase(path_str);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            active_monitors_.erase(path_str);
+        }
+        backend_.remove_session(ObjectPath{path_str});
     });
 
     if (req) {
@@ -98,8 +104,14 @@ ResponseCode InhibitInterface::create_monitor(
     return ResponseCode::Success;
 }
 
-void InhibitInterface::query_end_response(const ObjectPath& /*session_handle*/) {
-    // Acknowledged
+void InhibitInterface::query_end_response(const ObjectPath& session_handle) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_monitors_.contains(session_handle.path)) return;
+    }
+    if (query_end_listener_) {
+        query_end_listener_(session_handle);
+    }
 }
 
 void InhibitInterface::notify_state_changed(bool screensaver_active, SessionState state) {

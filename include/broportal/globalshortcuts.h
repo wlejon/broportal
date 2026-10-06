@@ -26,8 +26,19 @@ public:
     explicit GlobalShortcutsInterface(PortalBackend& backend);
     ~GlobalShortcutsInterface();
 
+    // The compositor binds: it fills out_bound_shortcuts with what it actually
+    // grabbed (each with a "trigger_description"). Without a callback,
+    // BindShortcuts answers OtherError.
     void set_bind_shortcuts_callback(BindShortcutsCallback callback) {
         bind_callback_ = std::move(callback);
+    }
+
+    // Opens the host's shortcut settings (ConfigureShortcuts). Without one,
+    // ConfigureShortcuts answers org.freedesktop.DBus.Error.NotSupported.
+    void set_configure_callback(std::function<void(const ObjectPath& session_handle,
+                                                   const std::string& parent_window,
+                                                   const VariantMap& options)> callback) {
+        configure_callback_ = std::move(callback);
     }
 
     ResponseCode create_session(
@@ -89,6 +100,7 @@ private:
     mutable std::mutex mutex_;
     std::map<std::string, ShortcutList> session_shortcuts_;
     BindShortcutsCallback bind_callback_;
+    std::function<void(const ObjectPath&, const std::string&, const VariantMap&)> configure_callback_;
 };
 
 } // namespace broportal

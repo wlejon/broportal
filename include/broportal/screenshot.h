@@ -4,6 +4,7 @@
 #include "broportal/types.h"
 
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace broportal {
@@ -52,12 +53,10 @@ public:
         pick_color_callback_ = std::move(callback);
     }
 
+    // A preselected answer for PickColor when no callback is set. With neither,
+    // PickColor (like Screenshot without a callback) answers OtherError.
     void set_default_color(const RgbColor& color) {
         default_color_ = color;
-    }
-
-    void set_screenshot_dir(const std::string& dir) {
-        screenshot_dir_ = dir;
     }
 
     ResponseCode take_screenshot(
@@ -73,9 +72,6 @@ public:
         const std::string& parent_window,
         const VariantMap& options,
         VariantMap& results);
-
-    // Creates a valid sample test BMP screenshot file on disk
-    static bool save_sample_bmp(const std::string& filepath, int width, int height, uint8_t r, uint8_t g, uint8_t b);
 
     // D-Bus method and property handlers
     static int dbus_screenshot(sd_bus_message* m, void* userdata, sd_bus_error* ret_error);
@@ -95,8 +91,7 @@ private:
     PortalBackend& backend_;
     ScreenshotCallback screenshot_callback_;
     PickColorCallback pick_color_callback_;
-    RgbColor default_color_{0.2, 0.4, 0.8};
-    std::string screenshot_dir_ = "/tmp";
+    std::optional<RgbColor> default_color_;
 };
 
 } // namespace broportal

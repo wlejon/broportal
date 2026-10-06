@@ -1,72 +1,106 @@
+// The sd-bus layer on a private dbus-daemon: connection, method calls to the
+// bus driver, name ownership, signal emission and matches (checked from a
+// second connection and with dbus-send as an outside sender), and slot/bus
+// move semantics. Linux.
+#include "check.h"
+#include "fixture.h"
 #include "broportal/dbus_helpers.h"
 
-#include <cassert>
-#include <iostream>
+#include <string>
+
+using namespace broportal;
+using namespace broportal::dbus;
+
+namespace {
+
+void pump(Bus& bus, int rounds = 20) {
+    for (int i = 0; i < rounds; ++i) {
+        bus.wait(20000);
+        while (bus.process() > 0) {
+        }
+    }
+}
+
+}  // namespace
 
 int main() {
-    using namespace broportal;
-    using namespace broportal::dbus;
+    bstest::PrivateBus daemon;
+    if (!daemon.ok()) bstest::skip("test_dbus_helpers", "dbus-daemon could not be started");
 
     std::string err;
-    auto bus = Bus::open_user(&err);
-    if (!bus) {
-        std::cout << "Skipping test_dbus_helpers: user bus not available: " << err << "\n";
-        return 77;
+    auto bus = Bus::open_address(daemon.address, &err);
+    REQUIRE(bus);
+    CHECK(bus->is_valid());
+    CHECK(bus->get_fd() >= 0);
+
+    // A method call through Message, answered by the bus driver.
+    std::string owner;
+    CHECK(bus->call_method("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                           "GetNameOwner", [](Message& m) { m.append_string("org.freedesktop.DBus"); },
+                           [&](Message& r) { r.read_string(&owner); }, &err));
+    CHECK_EQ(owner, std::string("org.freedesktop.DBus"));
+
+    // Name ownership, visible to another connection.
+    CHECK(bus->request_name("org.bro.PortalTest", 0, &err));
+    auto other = Bus::open_address(daemon.address, &err);
+    REQUIRE(other);
+    bool has_owner = false;
+    CHECK(other->call_method("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                             "NameHasOwner", [](Message& m) { m.append_string("org.bro.PortalTest"); },
+                             [&](Message& r) { r.read_bool(&has_owner); }, &err));
+    CHECK(has_owner);
+    // A second owner is refused.
+    CHECK(!other->request_name("org.bro.PortalTest", 0, &err));
+    CHECK(bus->release_name("org.bro.PortalTest", &err));
+
+    // Signals: emitted by one connection, matched on another.
+    int hits = 0;
+    std::string payload;
+    auto slot = other->add_match("type='signal',interface='org.bro.Test',member='Ping'",
+                                 [&](Message& m) {
+                                     m.read_string(&payload);
+                                     ++hits;
+                                 },
+                                 &err);
+    REQUIRE(slot.is_valid());
+    pump(*other, 2);
+    CHECK(bus->emit_signal("/org/bro/test", "org.bro.Test", "Ping",
+                           [](Message& m) { m.append_string("from-broportal"); }, &err));
+    bus->flush();
+    CHECK(bstest::wait_until([&] { pump(*other, 1); return hits == 1; }, std::chrono::seconds(5)));
+    CHECK_EQ(payload, std::string("from-broportal"));
+
+    // ...and from an outside sender.
+    std::string send = "dbus-send --address='" + daemon.address +
+                       "' --type=signal /x org.bro.Test.Ping string:from-dbus-send >/dev/null 2>&1";
+    if (std::system(send.c_str()) == 0) {
+        CHECK(bstest::wait_until([&] { pump(*other, 1); return hits == 2; }, std::chrono::seconds(5)));
+        CHECK_EQ(payload, std::string("from-dbus-send"));
+    } else {
+        std::printf("Note: dbus-send is not installed; the outside-sender check did not run\n");
     }
 
-    assert(bus->is_valid());
-    assert(bus->get_fd() >= 0);
+    // Slot moves carry the match; reset ends it.
+    Slot moved = std::move(slot);
+    CHECK(moved.is_valid());
+    CHECK(!slot.is_valid());
+    moved.reset();
+    CHECK(!moved.is_valid());
+    int before = hits;
+    bus->emit_signal("/org/bro/test", "org.bro.Test", "Ping", [](Message& m) { m.append_string("late"); });
+    bus->flush();
+    pump(*other);
+    CHECK_EQ(hits, before);
 
-    // Test move semantics
+    // Bus moves carry the connection.
     Bus moved_bus = std::move(*bus);
-    assert(moved_bus.is_valid());
-    assert(!bus->is_valid());
+    CHECK(moved_bus.is_valid());
+    CHECK(!bus->is_valid());
 
-    // Test message creation and encoding
-    sd_bus_message* raw_msg = nullptr;
-    int r = sd_bus_message_new_method_call(
-        moved_bus.raw(),
-        &raw_msg,
-        "org.freedesktop.DBus",
-        "/org/freedesktop/DBus",
-        "org.freedesktop.DBus",
-        "GetNameOwner");
-    assert(r >= 0);
+    // A call to a name nobody owns fails with an error.
+    err.clear();
+    CHECK(!moved_bus.call_method("org.bro.Nobody", "/", "org.bro.Nobody", "X", nullptr, nullptr, &err, 1000000));
+    CHECK(!err.empty());
 
-    Message msg(raw_msg, true);
-    assert(msg.is_valid());
-    assert(msg.append_string("org.freedesktop.DBus"));
-
-    // Test call
-    sd_bus_error sdbus_err = SD_BUS_ERROR_NULL;
-    sd_bus_message* reply = nullptr;
-    r = sd_bus_call(moved_bus.raw(), msg.raw(), 3000000, &sdbus_err, &reply);
-    assert(r >= 0);
-    assert(reply != nullptr);
-
-    Message reply_msg(reply, true);
-    std::string owner;
-    assert(reply_msg.read_string(&owner));
-    assert(!owner.empty());
-    std::cout << "org.freedesktop.DBus owner: " << owner << "\n";
-
-    // Test Match Slot
-    int signal_count = 0;
-    auto slot = moved_bus.add_match(
-        "type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged'",
-        [&signal_count](Message&) {
-            signal_count++;
-        });
-    assert(slot.is_valid());
-
-    // Test Slot move semantics
-    Slot moved_slot = std::move(slot);
-    assert(moved_slot.is_valid());
-    assert(!slot.is_valid());
-
-    moved_slot.reset();
-    assert(!moved_slot.is_valid());
-
-    std::cout << "test_dbus_helpers PASSED\n";
-    return 0;
+    return bstest::finish("test_dbus_helpers");
 }

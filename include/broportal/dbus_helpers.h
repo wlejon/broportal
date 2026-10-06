@@ -1,5 +1,9 @@
 #pragma once
 
+#if !defined(__linux__)
+#error "broportal's D-Bus backend is Linux-only; off Linux use broportal/availability.h and broportal/types.h"
+#endif
+
 #include "broportal/types.h"
 
 #include <systemd/sd-bus.h>

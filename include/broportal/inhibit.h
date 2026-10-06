@@ -45,6 +45,11 @@ public:
         listener_ = std::move(listener);
     }
 
+    // Called when a monitor acknowledges a QueryEnd (QueryEndResponse).
+    void set_query_end_listener(std::function<void(const ObjectPath& session_handle)> listener) {
+        query_end_listener_ = std::move(listener);
+    }
+
     void inhibit(
         const ObjectPath& handle,
         const std::string& app_id,
@@ -78,6 +83,7 @@ private:
     std::map<std::string, InhibitEntry> inhibitions_;
     std::set<std::string> active_monitors_;
     InhibitChangeListener listener_;
+    std::function<void(const ObjectPath&)> query_end_listener_;
 };
 
 } // namespace broportal

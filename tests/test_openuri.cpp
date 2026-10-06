@@ -1,121 +1,110 @@
-#include "broportal/backend.h"
+// org.freedesktop.impl.portal.OpenURI (bro's own interface; the
+// xdg-desktop-portal spec has no backend OpenURI) on a private bus: with no
+// host handler both methods answer an error; with one, the URI reaches the
+// host and OpenFile hands over a descriptor for the very file the caller
+// opened (same inode, readable contents). Linux.
+#include "check.h"
+#include "fixture.h"
 
-#include <cassert>
+#include <cstdlib>
 #include <fcntl.h>
-#include <iostream>
+#include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
+using namespace broportal;
+
+namespace {
+
+constexpr const char* kIface = "org.freedesktop.impl.portal.OpenURI";
+
+std::function<void(dbus::Message&)> uri_args(const std::string& req, const std::string& uri) {
+    return [=](dbus::Message& m) {
+        m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/" + req});
+        m.append_string("org.example.App");
+        m.append_string("");
+        m.append_string(uri);
+        m.append_variant_map({});
+    };
+}
+
+std::function<void(dbus::Message&)> file_args(const std::string& req, int fd, VariantMap opts) {
+    return [=](dbus::Message& m) {
+        m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/" + req});
+        m.append_string("org.example.App");
+        m.append_string("");
+        m.append_unix_fd(UnixFd{fd});
+        m.append_variant_map(opts);
+    };
+}
+
+}  // namespace
+
 int main() {
-    using namespace broportal;
+    bstest::PortalFixture f("test_openuri");
 
-    std::string err;
-    BackendConfig config;
-    config.bus_name = "org.freedesktop.impl.portal.desktop.bro.test_openuri";
-    config.object_path = "/org/freedesktop/portal/desktop";
+    // Nothing to open with: errors, not a pretended success.
+    CHECK_EQ(f.request(kIface, "OpenURI", uri_args("u1", "https://example.com/")).code, 2u);
 
-    auto backend = PortalBackend::create_on_user_bus(config, &err);
-    if (!backend) {
-        std::cout << "Skipping test_openuri: user bus not available: " << err << "\n";
-        return 77;
+    char path[] = "/tmp/broportal-openuri-XXXXXX";
+    int fd = mkstemp(path);
+    REQUIRE(fd >= 0);
+    const std::string payload = "broportal open-file payload\n";
+    REQUIRE(write(fd, payload.data(), payload.size()) == static_cast<ssize_t>(payload.size()));
+    struct stat st{};
+    REQUIRE(fstat(fd, &st) == 0);
+
+    CHECK_EQ(f.request(kIface, "OpenFile", file_args("f1", fd, {})).code, 2u);
+
+    std::string seen_uri;
+    f.backend->open_uri().set_open_uri_callback(
+        [&](const ObjectPath& handle, const std::string& app_id, const std::string& uri, const VariantMap&,
+            VariantMap&) {
+            if (app_id != "org.example.App" || handle.path.find("/request/u") == std::string::npos)
+                return ResponseCode::OtherError;
+            seen_uri = uri;
+            return uri.starts_with("forbidden:") ? ResponseCode::Cancelled : ResponseCode::Success;
+        });
+
+    CHECK_EQ(f.request(kIface, "OpenURI", uri_args("u2", "https://example.com/portal?q=a%20b")).code, 0u);
+    CHECK_EQ(seen_uri, std::string("https://example.com/portal?q=a%20b"));
+    CHECK_EQ(f.request(kIface, "OpenURI", uri_args("u3", "forbidden:thing")).code, 1u);
+
+    bool same_inode = false;
+    std::string contents;
+    bool writable = false;
+    f.backend->open_uri().set_open_file_callback(
+        [&](const ObjectPath&, const std::string&, int got, const VariantMap& opts, VariantMap&) {
+            struct stat gst{};
+            if (fstat(got, &gst) != 0) return ResponseCode::OtherError;
+            same_inode = gst.st_ino == st.st_ino && gst.st_dev == st.st_dev;
+            char buf[128] = {};
+            ssize_t n = pread(got, buf, sizeof buf, 0);
+            if (n > 0) contents.assign(buf, static_cast<size_t>(n));
+            writable = get_bool_or(opts, "writable", false);
+            return ResponseCode::Success;
+        });
+
+    VariantMap opts;
+    opts["writable"] = Variant(true);
+    CHECK_EQ(f.request(kIface, "OpenFile", file_args("f2", fd, opts)).code, 0u);
+    CHECK(same_inode);
+    CHECK_EQ(contents, payload);
+    CHECK(writable);
+
+    // OpenURI from an independent client.
+    if (bstest::have_gdbus()) {
+        seen_uri.clear();
+        std::string out = f.gdbus(std::string(kIface) + ".OpenURI",
+                                  "/org/freedesktop/portal/desktop/request/u4 org.example.App '' "
+                                  "'mailto:someone@example.com' '{}'");
+        CHECK(out.find("uint32 0") != std::string::npos);
+        CHECK_EQ(seen_uri, std::string("mailto:someone@example.com"));
+    } else {
+        std::printf("Note: gdbus is not installed; the outside-client call did not run\n");
     }
 
-    bool uri_opened = false;
-    std::string opened_uri_str;
-    backend->open_uri().set_open_uri_callback(
-        [&uri_opened, &opened_uri_str](
-            const ObjectPath&,
-            const std::string&,
-            const std::string& uri,
-            const VariantMap&,
-            VariantMap&) {
-            uri_opened = true;
-            opened_uri_str = uri;
-            return ResponseCode::Success;
-        });
-
-    bool file_opened = false;
-    int opened_fd_val = -1;
-    backend->open_uri().set_open_file_callback(
-        [&file_opened, &opened_fd_val](
-            const ObjectPath&,
-            const std::string&,
-            int fd,
-            const VariantMap&,
-            VariantMap&) {
-            file_opened = true;
-            opened_fd_val = fd;
-            return ResponseCode::Success;
-        });
-
-    bool ok = backend->start(&err);
-    assert(ok);
-    assert(backend->run_in_background());
-
-    auto client_bus = dbus::Bus::open_user(&err);
-    assert(client_bus);
-
-    // 1. Call OpenURI
-    uint32_t resp_code = 999;
-    VariantMap results;
-
-    bool called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.OpenURI",
-        "OpenURI",
-        [](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/openuri_req_1"});
-            msg.append_string("org.example.App");
-            msg.append_string("");
-            msg.append_string("https://example.com/portal");
-            VariantMap opts;
-            msg.append_variant_map(opts);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-    assert(uri_opened);
-    assert(opened_uri_str == "https://example.com/portal");
-
-    // 2. Call OpenFile with real Unix file descriptor
-    int test_fd = open("/dev/null", O_RDONLY);
-    assert(test_fd >= 0);
-
-    resp_code = 999;
-    results.clear();
-
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.OpenURI",
-        "OpenFile",
-        [test_fd](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/openuri_req_2"});
-            msg.append_string("org.example.App");
-            msg.append_string("");
-            msg.append_unix_fd(UnixFd{test_fd});
-            VariantMap opts;
-            msg.append_variant_map(opts);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    close(test_fd);
-
-    assert(called);
-    assert(resp_code == 0);
-    assert(file_opened);
-    assert(opened_fd_val >= 0);
-
-    backend->stop();
-    std::cout << "test_openuri PASSED\n";
-    return 0;
+    close(fd);
+    unlink(path);
+    return bstest::finish("test_openuri");
 }

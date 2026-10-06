@@ -22,11 +22,12 @@ SettingsInterface::SettingsInterface(PortalBackend& backend)
 SettingsInterface::~SettingsInterface() = default;
 
 void SettingsInterface::init_defaults() {
-    // Default appearance settings
-    set_setting("org.freedesktop.appearance", "color-scheme", Variant(static_cast<uint32_t>(1))); // 1 = prefer dark
-    set_setting("org.freedesktop.appearance", "accent-color", Variant(RgbColor{0.2, 0.4, 0.8}));
-    set_setting("org.freedesktop.appearance", "contrast", Variant(static_cast<uint32_t>(0)));     // 0 = normal
-    set_setting("org.freedesktop.appearance", "reduced-motion", Variant(static_cast<uint32_t>(0)));// 0 = normal
+    // Until the host says otherwise, the user has expressed no preference:
+    // color-scheme 0 (none), normal contrast and motion, and no accent color
+    // (the key is absent, as the spec allows, rather than an invented one).
+    set_setting("org.freedesktop.appearance", "color-scheme", Variant(static_cast<uint32_t>(0)));
+    set_setting("org.freedesktop.appearance", "contrast", Variant(static_cast<uint32_t>(0)));
+    set_setting("org.freedesktop.appearance", "reduced-motion", Variant(static_cast<uint32_t>(0)));
 }
 
 bool SettingsInterface::matches_namespace(const std::string& pattern, const std::string& ns) {
@@ -164,7 +165,7 @@ int SettingsInterface::dbus_read(sd_bus_message* m, void* userdata, sd_bus_error
 
     auto val = self->get_setting(ns, key);
     if (!val.has_value()) {
-        return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_FILE_NOT_FOUND, "Setting not found");
+        return sd_bus_reply_method_errorf(m, "org.freedesktop.portal.Error.NotFound", "Requested setting not found");
     }
 
     sd_bus_message* reply = nullptr;

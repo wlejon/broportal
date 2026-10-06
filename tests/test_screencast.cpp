@@ -1,135 +1,118 @@
-#include "broportal/backend.h"
+// org.freedesktop.impl.portal.ScreenCast on a private bus: CreateSession,
+// SelectSources (options reach the host), Start relaying the host's streams
+// (a(ua{sv}) on the wire, read back by the library and by gdbus), Start with
+// no host callback failing, and Session.Close ending the session. Linux.
+#include "check.h"
+#include "fixture.h"
 
-#include <cassert>
-#include <iostream>
+#include <atomic>
+
+using namespace broportal;
+
+namespace {
+
+constexpr const char* kIface = "org.freedesktop.impl.portal.ScreenCast";
+
+std::function<void(dbus::Message&)> session_args(const std::string& req, const ObjectPath& sess,
+                                                 VariantMap opts, bool with_parent) {
+    return [=](dbus::Message& m) {
+        m.append_object_path(ObjectPath{req});
+        m.append_object_path(sess);
+        m.append_string("org.example.App");
+        if (with_parent) m.append_string("");
+        m.append_variant_map(opts);
+    };
+}
+
+}  // namespace
 
 int main() {
-    using namespace broportal;
+    bstest::PortalFixture f("test_screencast");
+    const ObjectPath sess{"/org/freedesktop/portal/desktop/session/sc_sess_1"};
+    const std::string req = "/org/freedesktop/portal/desktop/request/sc_req_";
 
-    std::string err;
-    BackendConfig config;
-    config.bus_name = "org.freedesktop.impl.portal.desktop.bro.test_screencast";
-    config.object_path = "/org/freedesktop/portal/desktop";
+    auto created = f.request(kIface, "CreateSession", session_args(req + "1", sess, {}, false));
+    CHECK(created.called);
+    CHECK_EQ(created.code, 0u);
+    CHECK(created.results.contains("session_id"));
+    CHECK(f.backend->get_session(sess) != nullptr);
 
-    auto backend = PortalBackend::create_on_user_bus(config, &err);
-    if (!backend) {
-        std::cout << "Skipping test_screencast: user bus not available: " << err << "\n";
-        return 77;
+    // Start before the host can stream: an error, not an invented stream.
+    auto early = f.request(kIface, "Start", session_args(req + "2", sess, {}, true));
+    CHECK_EQ(early.code, 2u);
+    CHECK(!early.results.contains("streams"));
+
+    // SelectSources: the host sees the parsed options at Start.
+    VariantMap select;
+    select["types"] = Variant(static_cast<uint32_t>(SourceType::Monitor) | static_cast<uint32_t>(SourceType::Window));
+    select["multiple"] = Variant(true);
+    select["cursor_mode"] = Variant(static_cast<uint32_t>(CursorMode::Embedded));
+    select["persist_mode"] = Variant(static_cast<uint32_t>(2));
+    auto selected = f.request(kIface, "SelectSources", session_args(req + "3", sess, select, false));
+    CHECK_EQ(selected.code, 0u);
+
+    std::atomic<uint32_t> seen_types{0}, seen_cursor{0}, seen_persist{0};
+    std::atomic<bool> seen_multiple{false};
+    f.backend->screencast().set_negotiate_callback(
+        [&](const ObjectPath&, const ObjectPath& s, const std::string&, const ScreenCastSourceOptions& o,
+            StreamList& streams, VariantMap& results) {
+            if (s != sess) return ResponseCode::OtherError;
+            seen_types = o.types;
+            seen_cursor = o.cursor_mode;
+            seen_persist = o.persist_mode;
+            seen_multiple = o.multiple;
+            VariantMap props;
+            props["position"] = Variant(Coord2D{0, 0});
+            props["size"] = Variant(Coord2D{2560, 1440});
+            props["source_type"] = Variant(static_cast<uint32_t>(SourceType::Monitor));
+            streams.emplace_back(57u, props);
+            results["persist_mode"] = Variant(o.persist_mode);
+            return ResponseCode::Success;
+        });
+
+    auto started = f.request(kIface, "Start", session_args(req + "4", sess, {}, true));
+    CHECK_EQ(started.code, 0u);
+    CHECK_EQ(seen_types.load(), 3u);
+    CHECK_EQ(seen_cursor.load(), 2u);
+    CHECK_EQ(seen_persist.load(), 2u);
+    CHECK(seen_multiple.load());
+    auto it = started.results.find("streams");
+    REQUIRE(it != started.results.end());
+    const StreamList* streams = it->second.get_if<StreamList>();
+    REQUIRE(streams != nullptr);
+    REQUIRE(streams->size() == 1);
+    CHECK_EQ(streams->front().first, 57u);
+    const VariantMap& props = streams->front().second;
+    REQUIRE(props.contains("size"));
+    const Coord2D* size = props.at("size").get_if<Coord2D>();
+    REQUIRE(size != nullptr);
+    CHECK_EQ(size->x, 2560);
+    CHECK_EQ(size->y, 1440);
+    CHECK_EQ(get_uint32_or(started.results, "persist_mode", 0), 2u);
+
+    if (bstest::have_gdbus()) {
+        std::string out = f.gdbus(std::string(kIface) + ".Start",
+                                  req + "5 " + sess.path + " org.example.App '' '{}'");
+        CHECK(out.find("uint32 0") != std::string::npos);
+        CHECK(out.find("(uint32 57,") != std::string::npos || out.find("(57,") != std::string::npos);
+        CHECK(out.find("(2560, 1440)") != std::string::npos);
+    } else {
+        std::printf("Note: gdbus is not installed; the outside-client call did not run\n");
     }
 
-    bool ok = backend->start(&err);
-    assert(ok);
-    assert(backend->run_in_background());
+    // Start on a session that does not exist.
+    auto unknown = f.request(kIface, "Start",
+                             session_args(req + "6", ObjectPath{"/org/freedesktop/portal/desktop/session/none"}, {},
+                                          true));
+    CHECK_EQ(unknown.code, 2u);
 
-    auto client_bus = dbus::Bus::open_user(&err);
-    assert(client_bus);
+    // Session.Close ends it: the backend forgets it and Start fails.
+    std::string err;
+    CHECK(f.client->call_method(f.config.bus_name, sess.path, "org.freedesktop.impl.portal.Session", "Close",
+                                nullptr, nullptr, &err));
+    CHECK(bstest::wait_until([&] { return f.backend->get_session(sess) == nullptr; }, std::chrono::seconds(5)));
+    auto after = f.request(kIface, "Start", session_args(req + "7", sess, {}, true));
+    CHECK_EQ(after.code, 2u);
 
-    ObjectPath sess_handle{"/org/freedesktop/portal/desktop/session/sc_sess_1"};
-    uint32_t resp_code = 999;
-    VariantMap results;
-
-    // 1. CreateSession
-    bool called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.ScreenCast",
-        "CreateSession",
-        [&sess_handle](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/sc_req_1"});
-            msg.append_object_path(sess_handle);
-            msg.append_string("org.example.App");
-            VariantMap opts;
-            msg.append_variant_map(opts);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-    assert(results.contains("session_id"));
-    std::cout << "Created ScreenCast session: " << results["session_id"].get_value_or<std::string>("") << "\n";
-
-    // 2. SelectSources
-    resp_code = 999;
-    results.clear();
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.ScreenCast",
-        "SelectSources",
-        [&sess_handle](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/sc_req_2"});
-            msg.append_object_path(sess_handle);
-            msg.append_string("org.example.App");
-            VariantMap opts;
-            opts["types"] = Variant(static_cast<uint32_t>(SourceType::Monitor));
-            opts["multiple"] = Variant(false);
-            msg.append_variant_map(opts);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-
-    // 3. Start (creates real PipeWire node)
-    resp_code = 999;
-    results.clear();
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.ScreenCast",
-        "Start",
-        [&sess_handle](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/sc_req_3"});
-            msg.append_object_path(sess_handle);
-            msg.append_string("org.example.App");
-            msg.append_string("");
-            VariantMap opts;
-            msg.append_variant_map(opts);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-    assert(results.contains("streams"));
-    const auto* stream_list = results["streams"].get_if<StreamList>();
-    assert(stream_list != nullptr);
-    assert(!stream_list->empty());
-
-    uint32_t node_id = stream_list->front().first;
-    const VariantMap& sprops = stream_list->front().second;
-    assert(node_id > 0);
-    assert(sprops.contains("position"));
-    assert(sprops.contains("size"));
-    assert(sprops.contains("source_type"));
-    assert(sprops.contains("pipewire-serial"));
-
-    std::cout << "ScreenCast Start returned PipeWire node ID: " << node_id
-              << ", serial: " << sprops.at("pipewire-serial").get_value_or<uint64_t>(0) << "\n";
-
-    // 4. Close Session
-    called = client_bus->call_method(
-        config.bus_name,
-        sess_handle.path,
-        "org.freedesktop.impl.portal.Session",
-        "Close",
-        nullptr,
-        nullptr,
-        &err);
-    assert(called);
-
-    backend->stop();
-    std::cout << "test_screencast PASSED\n";
-    return 0;
+    return bstest::finish("test_screencast");
 }

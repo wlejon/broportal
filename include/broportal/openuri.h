@@ -63,8 +63,6 @@ private:
     PortalBackend& backend_;
     OpenUriCallback open_uri_callback_;
     OpenFileCallback open_file_callback_;
-
-    static bool is_scheme_supported(const std::string& uri);
 };
 
 } // namespace broportal

@@ -10,7 +10,6 @@
 namespace broportal {
 
 class PortalBackend;
-class PipeWireStreamNode;
 
 enum class SourceType : uint32_t {
     Monitor = 1,

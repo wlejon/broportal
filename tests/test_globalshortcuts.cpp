@@ -1,148 +1,126 @@
-#include "broportal/backend.h"
+// org.freedesktop.impl.portal.GlobalShortcuts on a private bus, driven by
+// gdbus with one thread dispatching the backend: binding fails with no
+// compositor to grab keys; with one, its bound triggers come back, are
+// listed, announced by ShortcutsChanged, and Activated/Deactivated reach a
+// listener; ConfigureShortcuts is NotSupported until the host offers a UI.
+// Linux.
+#include "check.h"
+#include "fixture.h"
 
-#include <cassert>
-#include <chrono>
-#include <iostream>
-#include <thread>
+#include <vector>
+
+using namespace broportal;
 
 int main() {
-    using namespace broportal;
-
+    bstest::PortalFixture f("test_globalshortcuts", false);
+    if (!bstest::have_gdbus()) bstest::skip("test_globalshortcuts", "gdbus (the outside client) is not installed");
     std::string err;
-    BackendConfig config;
-    config.bus_name = "org.freedesktop.impl.portal.desktop.bro.test_shortcuts";
-    config.object_path = "/org/freedesktop/portal/desktop";
+    REQUIRE(f.backend->start(&err));
+    auto& gs = f.backend->global_shortcuts();
 
-    auto backend = PortalBackend::create_on_user_bus(config, &err);
-    if (!backend) {
-        std::cout << "Skipping test_globalshortcuts: user bus not available: " << err << "\n";
-        return 77;
-    }
+    auto gdbus = [&](const std::string& method, const std::string& args) {
+        return bstest::run_while_dispatching(
+            f.backend->bus(), "gdbus call --address '" + f.bus.address + "' --dest " + f.config.bus_name +
+                                  " --object-path " + f.config.object_path +
+                                  " --method org.freedesktop.impl.portal.GlobalShortcuts." + method + " " + args);
+    };
+    const std::string req = "/org/freedesktop/portal/desktop/request/gs_req_";
+    const std::string sess = "/org/freedesktop/portal/desktop/session/gs_sess_1";
+    const std::string wanted =
+        "\"[('mute_mic', {'description': <'Mute Microphone'>, 'preferred_trigger': <'F9'>}), "
+        "('push_to_talk', {'description': <'Push to talk'>})]\"";
 
-    bool ok = backend->start(&err);
-    assert(ok);
-    assert(backend->run_in_background());
+    auto created = gdbus("CreateSession", req + "1 " + sess + " org.example.App '{}'");
+    CHECK_EQ(created.status, 0);
+    CHECK(created.out.find("uint32 0") != std::string::npos);
+    CHECK(created.out.find("'session_id'") != std::string::npos);
 
-    auto client_bus = dbus::Bus::open_user(&err);
-    assert(client_bus);
+    // No compositor: nothing is bound.
+    auto unbound = gdbus("BindShortcuts", req + "2 " + sess + " " + wanted + " '' '{}'");
+    CHECK_EQ(unbound.status, 0);
+    CHECK(unbound.out.find("uint32 2") != std::string::npos);
 
-    ObjectPath sess_handle{"/org/freedesktop/portal/desktop/session/gs_sess_1"};
-    uint32_t resp_code = 999;
-    VariantMap results;
+    // The compositor grabs only mute_mic, on Ctrl+Alt+M.
+    std::string seen_app;
+    size_t seen_count = 0;
+    gs.set_bind_shortcuts_callback([&](const ObjectPath&, const ObjectPath&, const std::string& app_id,
+                                       const ShortcutList& in, ShortcutList& out, VariantMap&) {
+        seen_app = app_id;
+        seen_count = in.size();
+        for (const auto& [id, props] : in) {
+            if (id != "mute_mic") continue;
+            VariantMap p;
+            p["description"] = props.at("description");
+            p["trigger_description"] = Variant(std::string("Ctrl+Alt+M"));
+            out.emplace_back(id, p);
+        }
+        return ResponseCode::Success;
+    });
 
-    // 1. CreateSession
-    bool called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.GlobalShortcuts",
-        "CreateSession",
-        [&sess_handle](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/gs_req_1"});
-            msg.append_object_path(sess_handle);
-            msg.append_string("org.example.App");
-            VariantMap opts;
-            msg.append_variant_map(opts);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-
-    // 2. BindShortcuts
-    resp_code = 999;
-    results.clear();
-
-    ShortcutList shortcuts_to_bind;
-    VariantMap sc1;
-    sc1["description"] = Variant("Mute Microphone");
-    sc1["trigger_description"] = Variant("F9");
-    shortcuts_to_bind.emplace_back("mute_mic", std::move(sc1));
-
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.GlobalShortcuts",
-        "BindShortcuts",
-        [&sess_handle, &shortcuts_to_bind](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/gs_req_2"});
-            msg.append_object_path(sess_handle);
-            msg.append_shortcut_list(shortcuts_to_bind);
-            msg.append_string("");
-            VariantMap opts;
-            msg.append_variant_map(opts);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-    assert(results.contains("shortcuts"));
-
-    // 3. ListShortcuts
-    resp_code = 999;
-    results.clear();
-
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.GlobalShortcuts",
-        "ListShortcuts",
-        [&sess_handle](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/gs_req_3"});
-            msg.append_object_path(sess_handle);
-        },
-        [&resp_code, &results](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-            reply.read_variant_map(&results);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-    assert(results.contains("shortcuts"));
-    const auto* listed = results["shortcuts"].get_if<ShortcutList>();
-    assert(listed != nullptr);
-    assert(!listed->empty());
-    assert(listed->front().first == "mute_mic");
-
-    // 4. Activate signal
-    bool activated_received = false;
-    std::string activated_id;
-    uint64_t activated_ts = 0;
-
-    auto slot = client_bus->add_match(
-        "type='signal',interface='org.freedesktop.impl.portal.GlobalShortcuts',member='Activated'",
-        [&activated_received, &activated_id, &activated_ts](dbus::Message& msg) {
-            activated_received = true;
-            ObjectPath sp;
-            msg.read_object_path(&sp);
-            msg.read_string(&activated_id);
-            msg.read_uint64(&activated_ts);
+    std::vector<std::string> signals;
+    auto slot = f.client->add_match(
+        "type='signal',interface='org.freedesktop.impl.portal.GlobalShortcuts'", [&](dbus::Message& m) {
+            ObjectPath p;
+            m.read_object_path(&p);
+            std::string member = sd_bus_message_get_member(m.raw());
+            if (member == "ShortcutsChanged") {
+                ShortcutList l;
+                m.read_shortcut_list(&l);
+                signals.push_back(member + ":" + p.path + ":" + std::to_string(l.size()));
+            } else {
+                std::string id;
+                uint64_t ts = 0;
+                m.read_string(&id);
+                m.read_uint64(&ts);
+                signals.push_back(member + ":" + id + ":" + std::to_string(ts));
+            }
         });
+    REQUIRE(slot.is_valid());
+    auto pump = [&](size_t want) {
+        for (int i = 0; i < 100 && signals.size() < want; ++i) {
+            while (f.backend->bus().process() > 0) {
+            }
+            f.client->wait(20000);
+            while (f.client->process() > 0) {
+            }
+        }
+    };
 
-    assert(slot.is_valid());
+    auto bound = gdbus("BindShortcuts", req + "3 " + sess + " " + wanted + " '' '{}'");
+    CHECK_EQ(bound.status, 0);
+    CHECK(bound.out.find("uint32 0") != std::string::npos);
+    CHECK(bound.out.find("'trigger_description': <'Ctrl+Alt+M'>") != std::string::npos);
+    CHECK(bound.out.find("push_to_talk") == std::string::npos);
+    CHECK_EQ(seen_app, std::string("org.example.App"));
+    CHECK_EQ(seen_count, 2u);
+    pump(1);
+    REQUIRE(signals.size() >= 1);
+    CHECK_EQ(signals[0], "ShortcutsChanged:" + sess + ":1");
 
-    uint64_t test_ts = 123456789;
-    backend->global_shortcuts().activate_shortcut(sess_handle, "mute_mic", test_ts);
+    auto listed = gdbus("ListShortcuts", req + "4 " + sess);
+    CHECK_EQ(listed.status, 0);
+    CHECK(listed.out.find("'mute_mic'") != std::string::npos);
+    CHECK(listed.out.find("Ctrl+Alt+M") != std::string::npos);
 
-    for (int i = 0; i < 30; ++i) {
-        client_bus->process();
-        if (activated_received) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    CHECK(gs.activate_shortcut(ObjectPath{sess}, "mute_mic", 123456789));
+    CHECK(gs.deactivate_shortcut(ObjectPath{sess}, "mute_mic", 123456999));
+    pump(3);
+    REQUIRE(signals.size() == 3);
+    CHECK_EQ(signals[1], std::string("Activated:mute_mic:123456789"));
+    CHECK_EQ(signals[2], std::string("Deactivated:mute_mic:123456999"));
 
-    assert(activated_received);
-    assert(activated_id == "mute_mic");
-    assert(activated_ts == test_ts);
+    // ConfigureShortcuts.
+    auto noui = gdbus("ConfigureShortcuts", sess + " '' '{}'");
+    CHECK(noui.status != 0);
+    CHECK(noui.out.find("NotSupported") != std::string::npos);
+    std::string configured;
+    gs.set_configure_callback([&](const ObjectPath& s, const std::string&, const VariantMap&) { configured = s.path; });
+    CHECK_EQ(gdbus("ConfigureShortcuts", sess + " '' '{}'").status, 0);
+    CHECK_EQ(configured, sess);
 
-    backend->stop();
-    std::cout << "test_globalshortcuts PASSED\n";
-    return 0;
+    // Unknown sessions.
+    auto nosess = gdbus("ListShortcuts", req + "5 /org/freedesktop/portal/desktop/session/none");
+    CHECK(nosess.out.find("uint32 2") != std::string::npos);
+
+    return bstest::finish("test_globalshortcuts");
 }

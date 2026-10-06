@@ -1,14 +1,7 @@
 #include "broportal/openuri.h"
 #include "broportal/backend.h"
 
-#include <fcntl.h>
-#include <filesystem>
-#include <iostream>
-#include <unistd.h>
-
 namespace broportal {
-
-namespace fs = std::filesystem;
 
 const sd_bus_vtable OpenURIInterface::vtable[] = {
     SD_BUS_VTABLE_START(0),
@@ -22,18 +15,6 @@ OpenURIInterface::OpenURIInterface(PortalBackend& backend)
 
 OpenURIInterface::~OpenURIInterface() = default;
 
-bool OpenURIInterface::is_scheme_supported(const std::string& uri) {
-    if (uri.starts_with("http://") ||
-        uri.starts_with("https://") ||
-        uri.starts_with("mailto:") ||
-        uri.starts_with("file://") ||
-        uri.starts_with("geo:") ||
-        uri.starts_with("tel:")) {
-        return true;
-    }
-    return false;
-}
-
 ResponseCode OpenURIInterface::open_uri(
     const ObjectPath& handle,
     const std::string& app_id,
@@ -45,12 +26,8 @@ ResponseCode OpenURIInterface::open_uri(
         return open_uri_callback_(handle, app_id, uri, options, results);
     }
 
-    if (uri.empty() || !is_scheme_supported(uri)) {
-        return ResponseCode::OtherError;
-    }
-
-    // Default handling success
-    return ResponseCode::Success;
+    // Nothing opened the URI: no host handler is set.
+    return ResponseCode::OtherError;
 }
 
 ResponseCode OpenURIInterface::open_file(
@@ -64,17 +41,9 @@ ResponseCode OpenURIInterface::open_file(
         return open_file_callback_(handle, app_id, fd, options, results);
     }
 
-    if (fd < 0) {
-        return ResponseCode::OtherError;
-    }
-
-    // Check if fd is valid
-    int flags = fcntl(fd, F_GETFD);
-    if (flags < 0) {
-        return ResponseCode::OtherError;
-    }
-
-    return ResponseCode::Success;
+    // Nothing opened the file: no host handler is set.
+    (void)fd;
+    return ResponseCode::OtherError;
 }
 
 int OpenURIInterface::dbus_open_uri(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {

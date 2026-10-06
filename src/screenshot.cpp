@@ -1,15 +1,10 @@
 #include "broportal/screenshot.h"
 #include "broportal/backend.h"
 
-#include <chrono>
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
+#include <cerrno>
+#include <string>
 
 namespace broportal {
-
-namespace fs = std::filesystem;
 
 const sd_bus_vtable ScreenshotInterface::vtable[] = {
     SD_BUS_VTABLE_START(0),
@@ -25,68 +20,6 @@ ScreenshotInterface::ScreenshotInterface(PortalBackend& backend)
 
 ScreenshotInterface::~ScreenshotInterface() = default;
 
-bool ScreenshotInterface::save_sample_bmp(
-    const std::string& filepath,
-    int width,
-    int height,
-    uint8_t r,
-    uint8_t g,
-    uint8_t b) {
-    int row_stride = (width * 3 + 3) & ~3;
-    uint32_t image_size = static_cast<uint32_t>(row_stride * height);
-    uint32_t file_size = 54 + image_size;
-
-    std::ofstream out(filepath, std::ios::binary);
-    if (!out) return false;
-
-    // Bitmap file header (14 bytes)
-    uint8_t file_header[14] = {
-        'B', 'M',
-        static_cast<uint8_t>(file_size & 0xFF),
-        static_cast<uint8_t>((file_size >> 8) & 0xFF),
-        static_cast<uint8_t>((file_size >> 16) & 0xFF),
-        static_cast<uint8_t>((file_size >> 24) & 0xFF),
-        0, 0, 0, 0, // reserved
-        54, 0, 0, 0 // offset
-    };
-    out.write(reinterpret_cast<const char*>(file_header), sizeof(file_header));
-
-    // Bitmap info header (40 bytes)
-    uint8_t info_header[40] = {
-        40, 0, 0, 0, // header size
-        static_cast<uint8_t>(width & 0xFF),
-        static_cast<uint8_t>((width >> 8) & 0xFF),
-        static_cast<uint8_t>((width >> 16) & 0xFF),
-        static_cast<uint8_t>((width >> 24) & 0xFF),
-        static_cast<uint8_t>(height & 0xFF),
-        static_cast<uint8_t>((height >> 8) & 0xFF),
-        static_cast<uint8_t>((height >> 16) & 0xFF),
-        static_cast<uint8_t>((height >> 24) & 0xFF),
-        1, 0, // planes
-        24, 0, // bpp
-        0, 0, 0, 0, // compression BI_RGB
-        static_cast<uint8_t>(image_size & 0xFF),
-        static_cast<uint8_t>((image_size >> 8) & 0xFF),
-        static_cast<uint8_t>((image_size >> 16) & 0xFF),
-        static_cast<uint8_t>((image_size >> 24) & 0xFF),
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    };
-    out.write(reinterpret_cast<const char*>(info_header), sizeof(info_header));
-
-    std::vector<uint8_t> row_buf(row_stride, 0);
-    for (int x = 0; x < width; ++x) {
-        row_buf[x * 3 + 0] = b;
-        row_buf[x * 3 + 1] = g;
-        row_buf[x * 3 + 2] = r;
-    }
-
-    for (int y = 0; y < height; ++y) {
-        out.write(reinterpret_cast<const char*>(row_buf.data()), row_stride);
-    }
-
-    return out.good();
-}
-
 ResponseCode ScreenshotInterface::take_screenshot(
     const ObjectPath& handle,
     const std::string& app_id,
@@ -100,27 +33,19 @@ ResponseCode ScreenshotInterface::take_screenshot(
     opts.permission_store_checked = get_bool_or(options, "permission_store_checked", false);
     opts.extra_options = options;
 
-    std::string uri;
-    ResponseCode code = ResponseCode::Success;
-
-    if (screenshot_callback_) {
-        code = screenshot_callback_(handle, app_id, opts, uri, results);
-    } else {
-        auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-        std::string filename = "broportal-screenshot-" + std::to_string(now) + ".bmp";
-        fs::path p = fs::path(screenshot_dir_) / filename;
-        if (save_sample_bmp(p.string(), 64, 64, 30, 144, 255)) {
-            uri = "file://" + fs::absolute(p).string();
-            results["uri"] = Variant(uri);
-        } else {
-            code = ResponseCode::OtherError;
-        }
+    // The compositor takes screenshots; the backend only relays. Without a
+    // host callback there is no image to give, so the answer is an error,
+    // never a made-up picture.
+    if (!screenshot_callback_) {
+        return ResponseCode::OtherError;
     }
 
-    if (code == ResponseCode::Success && !results.contains("uri") && !uri.empty()) {
+    std::string uri;
+    ResponseCode code = screenshot_callback_(handle, app_id, opts, uri, results);
+    if (code == ResponseCode::Success && !results.contains("uri")) {
+        if (uri.empty()) return ResponseCode::OtherError;
         results["uri"] = Variant(uri);
     }
-
     return code;
 }
 
@@ -130,20 +55,21 @@ ResponseCode ScreenshotInterface::pick_color(
     const std::string& /*parent_window*/,
     const VariantMap& options,
     VariantMap& results) {
-    RgbColor color = default_color_;
-    ResponseCode code = ResponseCode::Success;
-
     if (pick_color_callback_) {
-        code = pick_color_callback_(handle, app_id, options, color, results);
-    } else {
-        results["color"] = Variant(color);
+        RgbColor color = default_color_.value_or(RgbColor{});
+        ResponseCode code = pick_color_callback_(handle, app_id, options, color, results);
+        if (code == ResponseCode::Success && !results.contains("color")) {
+            results["color"] = Variant(color);
+        }
+        return code;
     }
-
-    if (code == ResponseCode::Success && !results.contains("color")) {
-        results["color"] = Variant(color);
+    if (default_color_) {
+        // The host preselected the answer (set_default_color).
+        results["color"] = Variant(*default_color_);
+        return ResponseCode::Success;
     }
-
-    return code;
+    // Nobody picked a color.
+    return ResponseCode::OtherError;
 }
 
 int ScreenshotInterface::dbus_screenshot(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {

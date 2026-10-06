@@ -30,6 +30,16 @@ struct RemoteDesktopInputListener {
     std::function<void(const ObjectPath& session, uint32_t slot)> on_touch_up;
 };
 
+// Grants (or refuses) a session's remote control: the host asks the user,
+// may narrow `devices` (the DeviceType bits SelectDevices asked for), and
+// answers. Without one, Start answers OtherError: nobody granted control.
+using RemoteDesktopStartCallback = std::function<ResponseCode(
+    const ObjectPath& handle,
+    const ObjectPath& session_handle,
+    const std::string& app_id,
+    uint32_t& devices,
+    VariantMap& out_results)>;
+
 class RemoteDesktopInterface {
 public:
     explicit RemoteDesktopInterface(PortalBackend& backend);
@@ -38,6 +48,14 @@ public:
     void set_input_listener(RemoteDesktopInputListener listener) {
         listener_ = std::move(listener);
     }
+
+    void set_start_callback(RemoteDesktopStartCallback callback) {
+        start_callback_ = std::move(callback);
+    }
+
+    // True once Start granted `session` the device: the Notify* methods are
+    // refused (AccessDenied) for any other session or device.
+    bool input_allowed(const ObjectPath& session, DeviceType device) const;
 
     const RemoteDesktopInputListener& input_listener() const noexcept { return listener_; }
 
@@ -103,6 +121,7 @@ public:
 private:
     PortalBackend& backend_;
     RemoteDesktopInputListener listener_;
+    RemoteDesktopStartCallback start_callback_;
 };
 
 } // namespace broportal

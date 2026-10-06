@@ -1,5 +1,6 @@
 #pragma once
 
+#include "broportal/availability.h"
 #include "broportal/backend.h"
 #include "broportal/dbus_helpers.h"
 #include "broportal/filechooser.h"

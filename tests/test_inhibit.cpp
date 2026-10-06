@@ -1,140 +1,113 @@
-#include "broportal/backend.h"
+// org.freedesktop.impl.portal.Inhibit on a private bus, driven by gdbus with
+// one thread dispatching the backend: Inhibit records the flags and reason
+// and tells the host, Request.Close lifts it, a monitor session receives
+// StateChanged and its QueryEndResponse reaches the host, and closing the
+// monitor stops both. Linux.
+#include "check.h"
+#include "fixture.h"
 
-#include <cassert>
-#include <chrono>
-#include <iostream>
-#include <thread>
+#include <vector>
+
+using namespace broportal;
 
 int main() {
-    using namespace broportal;
-
+    bstest::PortalFixture f("test_inhibit", false);
+    if (!bstest::have_gdbus()) bstest::skip("test_inhibit", "gdbus (the outside client) is not installed");
     std::string err;
-    BackendConfig config;
-    config.bus_name = "org.freedesktop.impl.portal.desktop.bro.test_inhibit";
-    config.object_path = "/org/freedesktop/portal/desktop";
+    REQUIRE(f.backend->start(&err));
+    auto& inh = f.backend->inhibit();
 
-    auto backend = PortalBackend::create_on_user_bus(config, &err);
-    if (!backend) {
-        std::cout << "Skipping test_inhibit: user bus not available: " << err << "\n";
-        return 77;
-    }
+    auto gdbus = [&](const std::string& path, const std::string& method, const std::string& args) {
+        return bstest::run_while_dispatching(f.backend->bus(), "gdbus call --address '" + f.bus.address +
+                                                                   "' --dest " + f.config.bus_name +
+                                                                   " --object-path " + path + " --method " +
+                                                                   method + " " + args);
+    };
+    const std::string obj = f.config.object_path;
 
-    bool ok = backend->start(&err);
-    assert(ok);
-    assert(backend->run_in_background());
+    std::vector<std::pair<bool, InhibitEntry>> changes;
+    inh.set_inhibit_change_listener([&](bool added, const InhibitEntry& e) { changes.emplace_back(added, e); });
 
-    auto client_bus = dbus::Bus::open_user(&err);
-    assert(client_bus);
+    const std::string req = "/org/freedesktop/portal/desktop/request/inhibit_req_1";
+    auto r = gdbus(obj, "org.freedesktop.impl.portal.Inhibit.Inhibit",
+                   req + " org.example.App main_window 12 \"{'reason': <'Playing a video'>}\"");
+    CHECK_EQ(r.status, 0);
+    CHECK(inh.is_inhibited(InhibitFlag::Idle));
+    CHECK(inh.is_inhibited(InhibitFlag::Suspend));
+    CHECK(!inh.is_inhibited(InhibitFlag::Logout));
+    auto active = inh.active_inhibitions();
+    REQUIRE(active.size() == 1);
+    CHECK_EQ(active.front().reason, std::string("Playing a video"));
+    CHECK_EQ(active.front().app_id, std::string("org.example.App"));
+    CHECK_EQ(active.front().window, std::string("main_window"));
+    REQUIRE(changes.size() == 1);
+    CHECK(changes[0].first);
 
-    // 1. Inhibit
-    ObjectPath req_handle{"/org/freedesktop/portal/desktop/request/inhibit_req_1"};
-    bool called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.Inhibit",
-        "Inhibit",
-        [&req_handle](dbus::Message& msg) {
-            msg.append_object_path(req_handle);
-            msg.append_string("org.example.App");
-            msg.append_string("main_window");
-            msg.append_uint32(static_cast<uint32_t>(InhibitFlag::Idle) | static_cast<uint32_t>(InhibitFlag::Suspend));
-            VariantMap opts;
-            opts["reason"] = Variant("Playing a video");
-            msg.append_variant_map(opts);
-        },
-        nullptr,
-        &err);
+    // A second inhibitor, then the first is withdrawn: only its flags lift.
+    const std::string req2 = "/org/freedesktop/portal/desktop/request/inhibit_req_2";
+    CHECK_EQ(gdbus(obj, "org.freedesktop.impl.portal.Inhibit.Inhibit", req2 + " org.example.Other '' 1 '{}'").status, 0);
+    CHECK(inh.is_inhibited(InhibitFlag::Logout));
+    CHECK_EQ(gdbus(req, "org.freedesktop.impl.portal.Request.Close", "").status, 0);
+    CHECK(!inh.is_inhibited(InhibitFlag::Idle));
+    CHECK(!inh.is_inhibited(InhibitFlag::Suspend));
+    CHECK(inh.is_inhibited(InhibitFlag::Logout));
+    REQUIRE(changes.size() == 3);
+    CHECK(!changes[2].first);
+    CHECK_EQ(changes[2].second.handle.path, req);
+    CHECK_EQ(gdbus(req2, "org.freedesktop.impl.portal.Request.Close", "").status, 0);
+    CHECK(inh.active_inhibitions().empty());
+    CHECK(f.backend->get_request(ObjectPath{req}) == nullptr);
+    CHECK(f.backend->get_request(ObjectPath{req2}) == nullptr);
 
-    assert(called);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // A monitor session.
+    const std::string mon = "/org/freedesktop/portal/desktop/session/inhibit_mon_1";
+    auto created = gdbus(obj, "org.freedesktop.impl.portal.Inhibit.CreateMonitor",
+                         "/org/freedesktop/portal/desktop/request/inhibit_mon_req " + mon + " org.example.App ''");
+    CHECK_EQ(created.status, 0);
+    CHECK(created.out.find("uint32 0") != std::string::npos);
 
-    assert(backend->inhibit().is_inhibited(InhibitFlag::Idle));
-    assert(backend->inhibit().is_inhibited(InhibitFlag::Suspend));
-    assert(!backend->inhibit().is_inhibited(InhibitFlag::Logout));
-
-    auto inhibitions = backend->inhibit().active_inhibitions();
-    assert(inhibitions.size() == 1);
-    assert(inhibitions.front().reason == "Playing a video");
-
-    // 2. Client cancels inhibition by calling Request.Close()
-    called = client_bus->call_method(
-        config.bus_name,
-        req_handle.path,
-        "org.freedesktop.impl.portal.Request",
-        "Close",
-        nullptr,
-        nullptr,
-        &err);
-    assert(called);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    assert(!backend->inhibit().is_inhibited(InhibitFlag::Idle));
-    assert(backend->inhibit().active_inhibitions().empty());
-    std::cout << "Inhibition cleared after Request.Close()\n";
-
-    // 3. CreateMonitor & StateChanged
-    bool state_changed_received = false;
-    uint32_t session_state = 0;
-
-    auto slot = client_bus->add_match(
+    std::vector<std::pair<std::string, uint32_t>> states;
+    auto slot = f.client->add_match(
         "type='signal',interface='org.freedesktop.impl.portal.Inhibit',member='StateChanged'",
-        [&state_changed_received, &session_state](dbus::Message& msg) {
-            state_changed_received = true;
-            ObjectPath mon_path;
-            msg.read_object_path(&mon_path);
-            VariantMap state_map;
-            msg.read_variant_map(&state_map);
-            session_state = get_uint32_or(state_map, "session-state", 0);
+        [&](dbus::Message& m) {
+            ObjectPath p;
+            VariantMap st;
+            m.read_object_path(&p);
+            m.read_variant_map(&st);
+            states.emplace_back(p.path, get_uint32_or(st, "session-state", 0));
         });
-
-    assert(slot.is_valid());
-
-    ObjectPath mon_sess{"/org/freedesktop/portal/desktop/session/inhibit_mon_1"};
-    uint32_t resp_code = 999;
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.Inhibit",
-        "CreateMonitor",
-        [&mon_sess](dbus::Message& msg) {
-            msg.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/inhibit_mon_req"});
-            msg.append_object_path(mon_sess);
-            msg.append_string("org.example.App");
-            msg.append_string("main_window");
-        },
-        [&resp_code](dbus::Message& reply) {
-            reply.read_uint32(&resp_code);
-        },
-        &err);
-
-    assert(called);
-    assert(resp_code == 0);
-
-    backend->inhibit().notify_state_changed(false, SessionState::QueryEnd);
-
-    for (int i = 0; i < 30; ++i) {
-        client_bus->process();
-        if (state_changed_received) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    REQUIRE(slot.is_valid());
+    auto pump = [&](size_t want) {
+        for (int i = 0; i < 100 && states.size() < want; ++i) {
+            while (f.backend->bus().process() > 0) {
+            }
+            f.client->wait(20000);
+            while (f.client->process() > 0) {
+            }
+        }
+    };
+    while (f.client->process() > 0) {
     }
+    inh.notify_state_changed(false, SessionState::QueryEnd);
+    pump(1);
+    REQUIRE(states.size() == 1);
+    CHECK_EQ(states[0].first, mon);
+    CHECK_EQ(states[0].second, static_cast<uint32_t>(SessionState::QueryEnd));
 
-    assert(state_changed_received);
-    assert(session_state == static_cast<uint32_t>(SessionState::QueryEnd));
+    std::vector<std::string> acks;
+    inh.set_query_end_listener([&](const ObjectPath& p) { acks.push_back(p.path); });
+    CHECK_EQ(gdbus(obj, "org.freedesktop.impl.portal.Inhibit.QueryEndResponse", mon).status, 0);
+    REQUIRE(acks.size() == 1);
+    CHECK_EQ(acks[0], mon);
 
-    // Acknowledge query end
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.Inhibit",
-        "QueryEndResponse",
-        [&mon_sess](dbus::Message& msg) {
-            msg.append_object_path(mon_sess);
-        },
-        nullptr,
-        &err);
-    assert(called);
+    // Closed: no more state, and its acknowledgements are ignored.
+    CHECK_EQ(gdbus(mon, "org.freedesktop.impl.portal.Session.Close", "").status, 0);
+    CHECK(f.backend->get_session(ObjectPath{mon}) == nullptr);
+    inh.notify_state_changed(false, SessionState::Ending);
+    pump(2);
+    CHECK_EQ(states.size(), 1u);
+    CHECK_EQ(gdbus(obj, "org.freedesktop.impl.portal.Inhibit.QueryEndResponse", mon).status, 0);
+    CHECK_EQ(acks.size(), 1u);
 
-    backend->stop();
-    std::cout << "test_inhibit PASSED\n";
-    return 0;
+    return bstest::finish("test_inhibit");
 }

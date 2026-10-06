@@ -1,6 +1,5 @@
 #include "broportal/screencast.h"
 #include "broportal/backend.h"
-#include "screencast_pipewire.h"
 
 #include <iostream>
 
@@ -82,28 +81,13 @@ ResponseCode ScreenCastInterface::start(
     StreamList stream_list;
     ResponseCode code = ResponseCode::Success;
 
-    if (negotiate_callback_) {
-        code = negotiate_callback_(handle, session_handle, app_id, opts, stream_list, results);
-    } else {
-        auto node = std::make_shared<PipeWireStreamNode>("broportal-screencast", 1920, 1080);
-        if (!node->initialize()) {
-            return ResponseCode::OtherError;
-        }
-
-        VariantMap stream_props;
-        stream_props["position"] = Variant(node->position());
-        stream_props["size"] = Variant(node->size());
-        stream_props["source_type"] = Variant(static_cast<uint32_t>(SourceType::Monitor));
-        stream_props["pipewire-serial"] = Variant(node->serial());
-
-        stream_list.emplace_back(node->node_id(), std::move(stream_props));
-
-        // Keep node alive as long as session is alive
-        session->set_context("pipewire_stream_node", node);
-
-        results["streams"] = Variant(stream_list);
-        results["persist_mode"] = Variant(opts.persist_mode);
+    // The compositor owns the screen and creates the PipeWire streams; the
+    // backend relays them. Without a host callback there is no stream to
+    // offer, so Start fails rather than handing out a node with no frames.
+    if (!negotiate_callback_) {
+        return ResponseCode::OtherError;
     }
+    code = negotiate_callback_(handle, session_handle, app_id, opts, stream_list, results);
 
     if (code == ResponseCode::Success && !results.contains("streams")) {
         results["streams"] = Variant(stream_list);

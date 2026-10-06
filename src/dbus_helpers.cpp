@@ -681,6 +681,14 @@ std::unique_ptr<Bus> Bus::open_address(const std::string& address, std::string* 
         sd_bus_unref(raw_bus);
         return nullptr;
     }
+    // A message bus, not a peer-to-peer connection: send Hello, so the
+    // connection gets a unique name and can own names and register matches.
+    r = sd_bus_set_bus_client(raw_bus, 1);
+    if (r < 0) {
+        if (error) *error = strerror(-r);
+        sd_bus_unref(raw_bus);
+        return nullptr;
+    }
     r = sd_bus_start(raw_bus);
     if (r < 0) {
         if (error) *error = strerror(-r);

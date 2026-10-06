@@ -25,12 +25,31 @@ std::string FileChooserInterface::normalize_file_uri(const std::string& path_or_
     if (path_or_uri.starts_with("file://")) {
         return path_or_uri;
     }
+    std::string path;
     try {
-        fs::path p = fs::absolute(path_or_uri);
-        return "file://" + p.string();
+        path = fs::absolute(path_or_uri).string();
     } catch (...) {
-        return "file://" + path_or_uri;
+        path = path_or_uri;
     }
+    // RFC 3986: a path may carry unreserved characters, '/' and a few
+    // sub-delimiters as they are; everything else (spaces, '%', '#', '?',
+    // non-ASCII bytes) is percent-encoded.
+    static const char* kHex = "0123456789ABCDEF";
+    std::string uri = "file://";
+    for (unsigned char c : path) {
+        bool keep = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+                    c == '.' || c == '_' || c == '~' || c == '/' || c == '!' || c == '$' || c == '&' ||
+                    c == '\'' || c == '(' || c == ')' || c == '*' || c == '+' || c == ',' || c == ';' ||
+                    c == '=' || c == ':' || c == '@';
+        if (keep) {
+            uri.push_back(static_cast<char>(c));
+        } else {
+            uri.push_back('%');
+            uri.push_back(kHex[c >> 4]);
+            uri.push_back(kHex[c & 15]);
+        }
+    }
+    return uri;
 }
 
 FileChooserOptions FileChooserInterface::parse_options(const VariantMap& options) {
@@ -77,17 +96,17 @@ ResponseCode FileChooserInterface::open_file(
     ResponseCode code = ResponseCode::Success;
     if (callback_) {
         code = callback_(handle, app_id, title, opts, selected_uris, results);
-    } else {
-        if (!default_uris_.empty()) {
-            for (const auto& u : default_uris_) {
-                selected_uris.push_back(normalize_file_uri(u));
-            }
-        } else {
-            // Default fallback if no files configured
-            selected_uris.push_back("file:///tmp/broportal-test.txt");
+    } else if (!default_uris_.empty()) {
+        // The host preselected the answer (set_default_selected_files).
+        for (const auto& u : default_uris_) {
+            selected_uris.push_back(normalize_file_uri(u));
         }
         results["uris"] = Variant(selected_uris);
         results["writable"] = Variant(false);
+    } else {
+        // No picker and no preselection: nobody chose anything, so say so
+        // rather than inventing a file.
+        return ResponseCode::OtherError;
     }
 
     if (code == ResponseCode::Success && !results.contains("uris")) {
@@ -114,18 +133,13 @@ ResponseCode FileChooserInterface::save_file(
     ResponseCode code = ResponseCode::Success;
     if (callback_) {
         code = callback_(handle, app_id, title, opts, selected_uris, results);
-    } else {
-        std::string chosen_path;
-        if (!opts.current_name.empty()) {
-            std::string folder = opts.current_folder.empty() ? "/tmp" : opts.current_folder;
-            chosen_path = folder + "/" + opts.current_name;
-        } else if (!default_uris_.empty()) {
-            chosen_path = default_uris_.front();
-        } else {
-            chosen_path = "/tmp/broportal-save.dat";
-        }
-        selected_uris.push_back(normalize_file_uri(chosen_path));
+    } else if (!default_uris_.empty()) {
+        // The host preselected the answer (set_default_selected_files).
+        selected_uris.push_back(normalize_file_uri(default_uris_.front()));
         results["uris"] = Variant(selected_uris);
+    } else {
+        // No picker and no preselection: nobody chose a destination.
+        return ResponseCode::OtherError;
     }
 
     if (code == ResponseCode::Success && !results.contains("uris")) {

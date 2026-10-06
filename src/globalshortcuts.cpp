@@ -51,16 +51,19 @@ ResponseCode GlobalShortcutsInterface::bind_shortcuts(
     const VariantMap& /*options*/,
     VariantMap& results) {
     auto session = backend_.get_session(session_handle);
-    if (!session) {
+    if (!session || session->type() != SessionType::GlobalShortcuts) {
+        return ResponseCode::OtherError;
+    }
+    // Only the compositor can grab keys and say which trigger it assigned;
+    // without it nothing would ever fire, so binding fails instead of
+    // echoing the app's wishes back as if they were bound.
+    if (!bind_callback_) {
         return ResponseCode::OtherError;
     }
 
-    ShortcutList bound = shortcuts;
-    ResponseCode code = ResponseCode::Success;
-
-    if (bind_callback_) {
-        code = bind_callback_(handle, session_handle, app_id, shortcuts, bound, results);
-    }
+    ShortcutList bound;
+    ResponseCode code = bind_callback_(handle, session_handle, app_id.empty() ? session->app_id() : app_id,
+                                       shortcuts, bound, results);
 
     if (code == ResponseCode::Success) {
         {
@@ -251,7 +254,25 @@ int GlobalShortcutsInterface::dbus_list_shortcuts(sd_bus_message* m, void* userd
 }
 
 int GlobalShortcutsInterface::dbus_configure_shortcuts(sd_bus_message* m, void* userdata, sd_bus_error* /*ret_error*/) {
-    (void)userdata;
+    auto* self = static_cast<GlobalShortcutsInterface*>(userdata);
+    dbus::Message msg(m, false);
+
+    ObjectPath session_handle;
+    std::string parent_window;
+    VariantMap options;
+    if (!msg.read_object_path(&session_handle) ||
+        !msg.read_string(&parent_window) ||
+        !msg.read_variant_map(&options)) {
+        return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
+    }
+    if (!self->backend_.get_session(session_handle)) {
+        return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "No such session %s",
+                                          session_handle.path.c_str());
+    }
+    if (!self->configure_callback_) {
+        return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_NOT_SUPPORTED, "No shortcut configuration UI");
+    }
+    self->configure_callback_(session_handle, parent_window, options);
     return sd_bus_reply_method_return(m, "");
 }
 

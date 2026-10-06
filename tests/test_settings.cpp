@@ -1,107 +1,93 @@
-#include "broportal/backend.h"
+// org.freedesktop.impl.portal.Settings on a private bus, one thread
+// dispatching everything: the defaults state no preference, gdbus reads them
+// back (ReadAll with namespace globs, Read, NotFound for a missing key), and
+// a host change is visible to readers and announced by SettingChanged. Linux.
+#include "check.h"
+#include "fixture.h"
 
-#include <cassert>
-#include <chrono>
-#include <iostream>
-#include <thread>
+using namespace broportal;
 
 int main() {
-    using namespace broportal;
-
+    bstest::PortalFixture f("test_settings", false);
+    if (!bstest::have_gdbus()) bstest::skip("test_settings", "gdbus (the outside client) is not installed");
     std::string err;
-    BackendConfig config;
-    config.bus_name = "org.freedesktop.impl.portal.desktop.bro.test_settings";
-    config.object_path = "/org/freedesktop/portal/desktop";
+    REQUIRE(f.backend->start(&err));
 
-    auto backend = PortalBackend::create_on_user_bus(config, &err);
-    if (!backend) {
-        std::cout << "Skipping test_settings: user bus not available: " << err << "\n";
-        return 77;
-    }
+    auto& s = f.backend->settings();
+    auto gdbus = [&](const std::string& method, const std::string& args) {
+        return bstest::run_while_dispatching(
+            f.backend->bus(), "gdbus call --address '" + f.bus.address + "' --dest " + f.config.bus_name +
+                                  " --object-path " + f.config.object_path +
+                                  " --method org.freedesktop.impl.portal.Settings." + method + " " + args);
+    };
 
-    bool ok = backend->start(&err);
-    assert(ok);
-    assert(backend->run_in_background());
+    // No invented preferences.
+    CHECK_EQ(s.get_setting("org.freedesktop.appearance", "color-scheme").value_or(Variant()).get_value_or<uint32_t>(9),
+             0u);
+    CHECK(!s.get_setting("org.freedesktop.appearance", "accent-color").has_value());
 
-    auto client_bus = dbus::Bus::open_user(&err);
-    assert(client_bus);
+    auto read = gdbus("Read", "org.freedesktop.appearance color-scheme");
+    CHECK_EQ(read.status, 0);
+    CHECK(read.out.find("uint32 0") != std::string::npos);
 
-    // 1. ReadAll
-    SettingsMap all_settings;
-    bool called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.Settings",
-        "ReadAll",
-        [](dbus::Message& msg) {
-            msg.append_string_list({});
-        },
-        [&all_settings](dbus::Message& reply) {
-            reply.read_settings_map(&all_settings);
-        },
-        &err);
+    auto missing = gdbus("Read", "org.freedesktop.appearance accent-color");
+    CHECK(missing.status != 0);
+    CHECK(missing.out.find("org.freedesktop.portal.Error.NotFound") != std::string::npos);
 
-    assert(called);
-    assert(all_settings.contains("org.freedesktop.appearance"));
-    const auto& app_settings = all_settings["org.freedesktop.appearance"];
-    assert(app_settings.contains("color-scheme"));
-    uint32_t scheme = app_settings.at("color-scheme").get_value_or<uint32_t>(999);
-    assert(scheme == 1); // 1 = dark mode default
-    std::cout << "ReadAll color-scheme: " << scheme << "\n";
+    // Host settings in two namespaces; ReadAll filters by glob.
+    s.set_accent_color(RgbColor{1.0, 0.5, 0.0});
+    s.set_setting("org.gnome.desktop.interface", "gtk-theme", Variant(std::string("Adwaita")));
+    s.set_setting("org.gnome.desktop.a11y", "always-show-text-caret", Variant(true));
 
-    // 2. Read single key
-    Variant read_val;
-    called = client_bus->call_method(
-        config.bus_name,
-        config.object_path,
-        "org.freedesktop.impl.portal.Settings",
-        "Read",
-        [](dbus::Message& msg) {
-            msg.append_string("org.freedesktop.appearance");
-            msg.append_string("color-scheme");
-        },
-        [&read_val](dbus::Message& reply) {
-            reply.read_variant(&read_val);
-        },
-        &err);
+    auto all = gdbus("ReadAll", "\"['org.gnome.desktop.*']\"");
+    CHECK_EQ(all.status, 0);
+    CHECK(all.out.find("'gtk-theme': <'Adwaita'>") != std::string::npos);
+    CHECK(all.out.find("always-show-text-caret") != std::string::npos);
+    CHECK(all.out.find("org.freedesktop.appearance") == std::string::npos);
 
-    assert(called);
-    assert(read_val.get_value_or<uint32_t>(0) == 1);
+    auto everything = gdbus("ReadAll", "\"@as []\"");
+    CHECK_EQ(everything.status, 0);
+    CHECK(everything.out.find("'accent-color': <(1.0, 0.5, 0.0)>") != std::string::npos);
+    CHECK(everything.out.find("org.gnome.desktop.interface") != std::string::npos);
 
-    // 3. Listen for SettingChanged signal
-    bool signal_received = false;
-    std::string sig_ns, sig_key;
-    uint32_t sig_val = 0;
+    auto filtered = s.read_all({"org.gnome.desktop.interface"});
+    CHECK_EQ(filtered.size(), 1u);
 
-    auto slot = client_bus->add_match(
+    // SettingChanged reaches a listener, and the observer runs.
+    std::string obs_key;
+    s.add_change_observer([&](const std::string&, const std::string& key, const Variant&) { obs_key = key; });
+    bool got = false;
+    std::string ns, key;
+    uint32_t value = 0;
+    auto slot = f.client->add_match(
         "type='signal',interface='org.freedesktop.impl.portal.Settings',member='SettingChanged'",
-        [&signal_received, &sig_ns, &sig_key, &sig_val](dbus::Message& msg) {
-            signal_received = true;
-            msg.read_string(&sig_ns);
-            msg.read_string(&sig_key);
+        [&](dbus::Message& m) {
+            got = true;
+            m.read_string(&ns);
+            m.read_string(&key);
             Variant v;
-            msg.read_variant(&v);
-            sig_val = v.get_value_or<uint32_t>(0);
+            m.read_variant(&v);
+            value = v.get_value_or<uint32_t>(0);
         });
-
-    assert(slot.is_valid());
-
-    // Update setting to light mode (2)
-    backend->settings().set_color_scheme(2);
-
-    for (int i = 0; i < 30; ++i) {
-        client_bus->process();
-        if (signal_received) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    REQUIRE(slot.is_valid());
+    while (f.client->process() > 0) {
     }
+    s.set_color_scheme(2);
+    for (int i = 0; i < 100 && !got; ++i) {
+        while (f.backend->bus().process() > 0) {
+        }
+        f.client->wait(20000);
+        while (f.client->process() > 0) {
+        }
+    }
+    CHECK(got);
+    CHECK_EQ(ns, std::string("org.freedesktop.appearance"));
+    CHECK_EQ(key, std::string("color-scheme"));
+    CHECK_EQ(value, 2u);
+    CHECK_EQ(obs_key, std::string("color-scheme"));
 
-    assert(signal_received);
-    assert(sig_ns == "org.freedesktop.appearance");
-    assert(sig_key == "color-scheme");
-    assert(sig_val == 2);
-    std::cout << "SettingChanged signal verified: " << sig_ns << "." << sig_key << " = " << sig_val << "\n";
+    auto after = gdbus("Read", "org.freedesktop.appearance color-scheme");
+    CHECK(after.out.find("uint32 2") != std::string::npos);
 
-    backend->stop();
-    std::cout << "test_settings PASSED\n";
-    return 0;
+    return bstest::finish("test_settings");
 }

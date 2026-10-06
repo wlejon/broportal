@@ -43,7 +43,7 @@ ResponseCode RemoteDesktopInterface::create_session(
 
     std::string sess_id = "remotedesktop-" + std::to_string(reinterpret_cast<uintptr_t>(session.get()));
     session->set_session_id(sess_id);
-    results["session"] = Variant(sess_id);
+    results["session_id"] = Variant(sess_id);
 
     return ResponseCode::Success;
 }
@@ -65,14 +65,19 @@ ResponseCode RemoteDesktopInterface::select_devices(
 }
 
 ResponseCode RemoteDesktopInterface::start(
-    const ObjectPath& /*handle*/,
+    const ObjectPath& handle,
     const ObjectPath& session_handle,
-    const std::string& /*app_id*/,
+    const std::string& app_id,
     const std::string& /*parent_window*/,
     const VariantMap& /*options*/,
     VariantMap& results) {
     auto session = backend_.get_session(session_handle);
-    if (!session) {
+    if (!session || session->type() != SessionType::RemoteDesktop) {
+        return ResponseCode::OtherError;
+    }
+    // Control of the keyboard and pointer is the user's to give, through the
+    // host; with no host to ask, nothing is granted.
+    if (!start_callback_) {
         return ResponseCode::OtherError;
     }
 
@@ -80,12 +85,38 @@ ResponseCode RemoteDesktopInterface::start(
     if (session->has_context("device_types")) {
         devices = std::any_cast<uint32_t>(session->get_context("device_types"));
     }
+    const uint32_t requested = devices;
 
+    ResponseCode code = start_callback_(handle, session_handle, app_id, devices, results);
+    if (code != ResponseCode::Success) {
+        return code;
+    }
+    devices &= requested;  // the host may narrow the request, never widen it
+    session->set_context("granted_devices", devices);
     results["devices"] = Variant(devices);
-    results["clipboard_enabled"] = Variant(false);
-
+    if (!results.contains("clipboard_enabled")) {
+        results["clipboard_enabled"] = Variant(false);
+    }
     return ResponseCode::Success;
 }
+
+bool RemoteDesktopInterface::input_allowed(const ObjectPath& session_handle, DeviceType device) const {
+    auto session = backend_.get_session(session_handle);
+    if (!session || !session->has_context("granted_devices")) {
+        return false;
+    }
+    uint32_t granted = std::any_cast<uint32_t>(session->get_context("granted_devices"));
+    return (granted & static_cast<uint32_t>(device)) != 0;
+}
+
+namespace {
+
+int deny_input(sd_bus_message* m, const ObjectPath& session) {
+    return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_ACCESS_DENIED,
+                                      "Session %s was not granted that device", session.path.c_str());
+}
+
+}  // namespace
 
 void RemoteDesktopInterface::notify_keyboard_keycode(
     const ObjectPath& session,
@@ -302,6 +333,7 @@ int RemoteDesktopInterface::dbus_notify_keyboard_keycode(sd_bus_message* m, void
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Keyboard)) return deny_input(m, session);
     self->notify_keyboard_keycode(session, options, keycode, state);
     return sd_bus_reply_method_return(m, "");
 }
@@ -322,6 +354,7 @@ int RemoteDesktopInterface::dbus_notify_keyboard_keysym(sd_bus_message* m, void*
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Keyboard)) return deny_input(m, session);
     self->notify_keyboard_keysym(session, options, keysym, state);
     return sd_bus_reply_method_return(m, "");
 }
@@ -341,6 +374,7 @@ int RemoteDesktopInterface::dbus_notify_pointer_motion(sd_bus_message* m, void* 
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Pointer)) return deny_input(m, session);
     self->notify_pointer_motion(session, options, dx, dy);
     return sd_bus_reply_method_return(m, "");
 }
@@ -362,6 +396,7 @@ int RemoteDesktopInterface::dbus_notify_pointer_motion_absolute(sd_bus_message* 
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Pointer)) return deny_input(m, session);
     self->notify_pointer_motion_absolute(session, options, stream, x, y);
     return sd_bus_reply_method_return(m, "");
 }
@@ -382,6 +417,7 @@ int RemoteDesktopInterface::dbus_notify_pointer_button(sd_bus_message* m, void* 
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Pointer)) return deny_input(m, session);
     self->notify_pointer_button(session, options, button, state);
     return sd_bus_reply_method_return(m, "");
 }
@@ -401,6 +437,7 @@ int RemoteDesktopInterface::dbus_notify_pointer_axis(sd_bus_message* m, void* us
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Pointer)) return deny_input(m, session);
     self->notify_pointer_axis(session, options, dx, dy);
     return sd_bus_reply_method_return(m, "");
 }
@@ -421,6 +458,7 @@ int RemoteDesktopInterface::dbus_notify_pointer_axis_discrete(sd_bus_message* m,
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Pointer)) return deny_input(m, session);
     self->notify_pointer_axis_discrete(session, options, axis, steps);
     return sd_bus_reply_method_return(m, "");
 }
@@ -443,6 +481,7 @@ int RemoteDesktopInterface::dbus_notify_touch_down(sd_bus_message* m, void* user
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Touchscreen)) return deny_input(m, session);
     self->notify_touch_down(session, options, stream, slot, x, y);
     return sd_bus_reply_method_return(m, "");
 }
@@ -465,6 +504,7 @@ int RemoteDesktopInterface::dbus_notify_touch_motion(sd_bus_message* m, void* us
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Touchscreen)) return deny_input(m, session);
     self->notify_touch_motion(session, options, stream, slot, x, y);
     return sd_bus_reply_method_return(m, "");
 }
@@ -483,6 +523,7 @@ int RemoteDesktopInterface::dbus_notify_touch_up(sd_bus_message* m, void* userda
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    if (!self->input_allowed(session, DeviceType::Touchscreen)) return deny_input(m, session);
     self->notify_touch_up(session, options, slot);
     return sd_bus_reply_method_return(m, "");
 }
