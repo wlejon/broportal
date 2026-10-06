@@ -81,8 +81,8 @@ ResponseCode handleNativeOpenFile(
     int fd,
     const VariantMap& options,
     VariantMap& out_results);
-#endif
 
+// The handler bridges (native_*.cpp): Linux only, like the backend they serve.
 void installFileChooserOnto(Value portalObj);
 void installScreenshotOnto(Value portalObj);
 void installScreenCastOnto(Value portalObj);
@@ -97,6 +97,7 @@ void shutdownFileChooser();
 void shutdownScreenshot();
 void shutdownScreenCast();
 void shutdownOpenUri();
+#endif
 
 inline Value variantToJs(const Variant& var) {
     if (var.is_null()) return ev::null();

@@ -172,23 +172,23 @@ void tickPortalAsync() {
     if (b && b->is_running()) {
         b->process();
     }
-#endif
 
     drainFileChooser();
     drainScreenshot();
     drainScreenCast();
     drainOpenUri();
+#endif
 
     ev::drainMicrotasks();
 }
 
 void shutdownPortalAsync() {
+#if defined(__linux__)
     shutdownFileChooser();
     shutdownScreenshot();
     shutdownScreenCast();
     shutdownOpenUri();
 
-#if defined(__linux__)
     auto b = activeBackend();
     if (b && b->is_running()) {
         b->stop_background();

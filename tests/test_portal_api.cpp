@@ -2,7 +2,9 @@
 #include "embed/embed.h"
 #include "eval/eval.h"
 #include "check.h"
+#if defined(__linux__)
 #include "fixture.h"
+#endif
 
 #include <chrono>
 #include <future>
@@ -12,6 +14,7 @@
 
 using namespace broportal;
 
+#if defined(__linux__)
 namespace {
 
 struct Reply {
@@ -30,6 +33,51 @@ auto callWithPump(F&& fn) {
 }
 
 } // namespace
+#endif
+
+#if !defined(__linux__)
+
+// Off Linux there is no portal backend: bro.portal says so, with a reason, and
+// every entry point refuses rather than pretending to register a handler.
+int main() {
+    namespace ev = bronze::embed;
+    using namespace bronze::eval;
+
+    std::cout << "Starting broportal JavaScript API tests (unavailable platform)..." << std::endl;
+
+    broportal::api::installPortal();
+
+    auto g = ev::globalValue("bro");
+    CHECK(g.found);
+    ev::Persistent portal(ev::getProperty(g.value, "portal"));
+    CHECK(ev::isObject(portal.get()));
+
+    ev::Persistent pAvail(ev::getProperty(portal.get(), "available"));
+    CHECK(ev::isBool(pAvail.get()) && !ev::toBool(pAvail.get()));
+
+    {
+        auto r = evalScript("typeof bro.portal.reason === 'string' && bro.portal.reason.length > 0");
+        CHECK(!r.thrown);
+        CHECK(ev::isBool(r.value) && ev::toBool(r.value));
+    }
+    for (const char* call : {"bro.portal.start()", "bro.portal.isRunning()", "bro.portal.stop()"}) {
+        auto r = evalScript(call);
+        CHECK(!r.thrown);
+        CHECK(ev::isBool(r.value) && !ev::toBool(r.value));
+    }
+    for (const char* on : {"onFileChooser", "onScreenshot", "onScreencast", "onOpenUri"}) {
+        auto r = evalScript(std::string("bro.portal.") + on + "(() => {})");
+        CHECK(r.thrown);
+    }
+
+    broportal::api::tickPortalAsync();
+    broportal::api::shutdownPortalAsync();
+
+    std::cout << "All broportal JavaScript API tests PASSED!" << std::endl;
+    return 0;
+}
+
+#else
 
 int main() {
     namespace ev = bronze::embed;
@@ -474,3 +522,5 @@ int main() {
     std::cout << "All broportal JavaScript API tests PASSED!" << std::endl;
     return 0;
 }
+
+#endif
