@@ -71,7 +71,9 @@ int main() {
     CHECK_EQ(payload, std::string("from-broportal"));
 
     // ...and from an outside sender.
-    std::string send = "dbus-send --address='" + daemon.address +
+    // --bus registers with the daemon (Hello); --address/--peer would not,
+    // and the daemon routes nothing from an unregistered connection.
+    std::string send = "dbus-send --bus='" + daemon.address +
                        "' --type=signal /x org.bro.Test.Ping string:from-dbus-send >/dev/null 2>&1";
     if (std::system(send.c_str()) == 0) {
         CHECK(bstest::wait_until([&] { pump(*other, 1); return hits == 2; }, std::chrono::seconds(5)));

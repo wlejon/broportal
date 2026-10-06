@@ -1,0 +1,24 @@
+version: 2
+
+# No package manifest to watch: broportal has no siblings and nothing vendored,
+# and its one system library (libsystemd) comes from the OS. That leaves the
+# pinned actions in .github/workflows/.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: [ci]
+    commit-message:
+      prefix: "ci"
+    ignore:
+      # GitHub maintains the `v4` major tag and ships security fixes to it, so
+      # `@v4` is already patched without any PR. Major bumps still come through.
+      - dependency-name: "github/codeql-action"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
