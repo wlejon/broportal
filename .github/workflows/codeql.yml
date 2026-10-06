@@ -19,7 +19,12 @@ concurrency:
 # bugs are.
 #
 # Two analyses: Linux (everything) and Windows (the portable value types).
-# broportal has no vendored or sibling code, so the whole build is traced.
+#
+# The siblings CMake compiles into the build (brodbus on Linux; bronze and
+# brass for broportal_api, on in a top-level build) are built ahead of `init`,
+# so they are never traced: for a compiled language CodeQL extracts only what
+# it watches being compiled, and each sibling is analysed in its own
+# repository. Everything broportal owns is built after `init`.
 jobs:
   analyze:
     name: Analyze C++ (${{ matrix.os }})
@@ -35,6 +40,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: broportal
+
+      - uses: actions/checkout@v7
+        with:
+          repository: wlejon/brodbus
+          path: brodbus
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
@@ -42,23 +56,27 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ninja-build pkg-config libsystemd-dev
 
+      - name: Configure and pre-build siblings (outside the traced build)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S broportal -B build -DBROPORTAL_BUILD_TESTS=OFF
+            cmake --build build --config Debug --parallel 4 --target bronze_runtime_shared
+          else
+            cmake -S broportal -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBROPORTAL_BUILD_TESTS=OFF
+            cmake --build build --parallel 4 --target bronze_runtime_shared brodbus
+          fi
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: c-cpp
           build-mode: manual
+          source-root: broportal
           queries: security-extended
 
       - name: Build (traced)
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -B build -DBROPORTAL_BUILD_TESTS=OFF
-            cmake --build build --config Debug --parallel 4
-          else
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBROPORTAL_BUILD_TESTS=OFF
-            cmake --build build --parallel 4
-          fi
+        run: cmake --build build --config Debug --parallel 4
 
       - name: Analyze
         uses: github/codeql-action/analyze@v4

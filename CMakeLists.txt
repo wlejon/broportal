@@ -123,7 +123,10 @@ if(BROPORTAL_LINUX)
 endif()
 
 # --- Standalone Bronze JavaScript API ---
-option(BROPORTAL_ENABLE_API "Build Bronze JavaScript API" ON)
+# On by default only when broportal is the top-level project. A library that
+# consumes broportal then never needs bronze checked out; bro, which does want
+# the binding, sets BROPORTAL_ENABLE_API ON itself.
+option(BROPORTAL_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BROPORTAL_ENABLE_API)
     if(NOT TARGET bronze_runtime_shared)
         set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)
