@@ -64,13 +64,13 @@ through their own bus clients.
 ### Resolving brodbus on Linux
 
 On Linux, `broportal` links `brodbus` for unified D-Bus connectivity, message
-serialization, and private bus test fixtures. The build resolves `brodbus`
-automatically in this order:
+serialization, and private bus test fixtures. There are no submodules: brodbus
+(and bronze, for the JavaScript API) is a `bro_dependency()` pin in
+`CMakeLists.txt`, resolved through `cmake/bro_deps.cmake` in this order:
 
-1. **Existing target**: If `brodbus::brodbus` is already added by a parent project.
-2. **Explicit directory**: `-DBRODBUS_DIR=<path>`.
-3. **Sibling checkout**: `../brodbus` beside `broportal`.
-4. **Submodule checkout**: `third_party/brodbus` within the repository.
+1. **Existing target**: If `brodbus` is already added by a parent project.
+2. **Working tree**: `../brodbus` beside the top-level project, or `-DFETCHCONTENT_SOURCE_DIR_BRODBUS=<path>`.
+3. **Pinned commit**: fetched from GitHub at configure, so a plain `git clone` builds.
 
 ### Standalone build
 
@@ -89,48 +89,20 @@ ctest --test-dir build -C Release --output-on-failure
 CMake options:
 - `BROPORTAL_BUILD_TESTS`: Build tests (default `ON` when top-level, `OFF` when included via `add_subdirectory`).
 - `BROPORTAL_COVERAGE`: Instrument the build for gcov coverage (GCC/Clang).
-- `BROPORTAL_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON`; searches `../bronze` or `-DBRONZE_DIR=<path>`).
+- `BROPORTAL_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON` when top-level; bronze, with brass, from `../bronze` or the pinned commit).
 
 ### Consuming broportal
 
-Downstream projects consume the `broportal::broportal` CMake target. Following
-the ecosystem dependency convention:
-
-#### Sibling layout
-
-When `broportal` is checked out beside your project at `../broportal`:
-
-```cmake
-if(NOT TARGET broportal::broportal)
-    if(DEFINED BROPORTAL_DIR AND EXISTS "${BROPORTAL_DIR}/CMakeLists.txt")
-        # Explicit override supplied via -DBROPORTAL_DIR=<path>
-    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../broportal/CMakeLists.txt")
-        set(BROPORTAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../broportal" CACHE PATH "broportal source tree")
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../broportal/CMakeLists.txt")
-        set(BROPORTAL_DIR "${CMAKE_SOURCE_DIR}/../broportal" CACHE PATH "broportal source tree")
-    endif()
-
-    if(NOT BROPORTAL_DIR OR NOT EXISTS "${BROPORTAL_DIR}/CMakeLists.txt")
-        message(FATAL_ERROR "broportal not found beside this repository or at BROPORTAL_DIR")
-    endif()
-
-    add_subdirectory("${BROPORTAL_DIR}" "${CMAKE_BINARY_DIR}/broportal-build" EXCLUDE_FROM_ALL)
-endif()
-```
-
-#### Submodule layout
-
-When `broportal` is vendored as a git submodule under `third_party/broportal`:
+Downstream projects consume the `broportal::broportal` CMake target. Ecosystem
+consumers pin it with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the
+outer project already added wins, else a `../broportal` working tree beside the
+top-level project, else the pinned commit, fetched at configure
+(`-DFETCHCONTENT_SOURCE_DIR_BROPORTAL=<path>` points at another tree):
 
 ```cmake
-if(NOT TARGET broportal::broportal)
-    add_subdirectory(third_party/broportal EXCLUDE_FROM_ALL)
-endif()
-```
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+bro_dependency(broportal GITHUB wlejon/broportal REF <40-hex sha>)
 
-#### Linking
-
-```cmake
 target_link_libraries(your_target PRIVATE broportal::broportal)
 ```
 
