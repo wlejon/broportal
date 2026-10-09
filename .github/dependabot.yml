@@ -1,7 +1,7 @@
 version: 2
 
-# No package manifest to watch: brodbus and bronze are bro_dependency() pins in
-# CMakeLists.txt, moved deliberately (bro's scripts/bump-deps.sh), and the one
+# No package manifest to watch: brodbus and bronze are bro_dependency() calls in
+# CMakeLists.txt that track their main, and the one
 # system library (libsystemd) comes from the OS. That leaves the pinned actions
 # in .github/workflows/.
 updates:

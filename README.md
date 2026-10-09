@@ -89,19 +89,19 @@ ctest --test-dir build -C Release --output-on-failure
 CMake options:
 - `BROPORTAL_BUILD_TESTS`: Build tests (default `ON` when top-level, `OFF` when included via `add_subdirectory`).
 - `BROPORTAL_COVERAGE`: Instrument the build for gcov coverage (GCC/Clang).
-- `BROPORTAL_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON` when top-level; bronze, with brass, from `../bronze` or the pinned commit).
+- `BROPORTAL_ENABLE_API`: Build the standalone Bronze JavaScript API (default `ON` when top-level; bronze, with brass, from `../bronze` or the head of its main branch).
 
 ### Consuming broportal
 
 Downstream projects consume the `broportal::broportal` CMake target. Ecosystem
-consumers pin it with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the
+consumers declare it with `bro_dependency()` (`cmake/bro_deps.cmake`): a target the
 outer project already added wins, else a `../broportal` working tree beside the
-top-level project, else the pinned commit, fetched at configure
+top-level project, else the head of its main branch, fetched at configure
 (`-DFETCHCONTENT_SOURCE_DIR_BROPORTAL=<path>` points at another tree):
 
 ```cmake
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
-bro_dependency(broportal GITHUB wlejon/broportal REF <40-hex sha>)
+bro_dependency(broportal)
 
 target_link_libraries(your_target PRIVATE broportal::broportal)
 ```
