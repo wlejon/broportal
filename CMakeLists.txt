@@ -72,7 +72,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
 
-    bro_dependency(brodbus GITHUB wlejon/brodbus REF 714ded627aed1c0db4b046d143bcc29e1ec9e9cf OPTIONS BRODBUS_BUILD_TESTS=OFF)
+    bro_dependency(brodbus GITHUB wlejon/brodbus OPTIONS BRODBUS_BUILD_TESTS=OFF)
 
     list(APPEND BROPORTAL_SOURCES
         src/backend.cpp
@@ -117,7 +117,7 @@ if(BROPORTAL_ENABLE_API)
     # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
     # outer project's target, else ../bronze beside the top-level project, else
     # the pinned commit, fetched at configure.
-    bro_dependency(bronze GITHUB wlejon/bronze REF 15ce4cf5fc25d8afe03882985ae95adcba46a6a9 TARGET bronze_runtime_shared
+    bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
                    OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
 
     add_subdirectory(src/api)
