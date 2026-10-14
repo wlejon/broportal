@@ -59,6 +59,7 @@ public:
     // Run event processing on a background thread
     bool run_in_background();
     void stop_background();
+    bool is_background_running() const noexcept { return bg_thread_.joinable(); }
 
     dbus::Bus& bus() noexcept { return *bus_; }
     const BackendConfig& config() const noexcept { return config_; }
@@ -85,6 +86,15 @@ public:
     }
     void set_open_uri_handler(OpenUriCallback callback) {
         if (open_uri_) open_uri_->set_open_uri_callback(std::move(callback));
+    }
+    void set_remote_desktop_handler(RemoteDesktopStartCallback callback) {
+        if (remote_desktop_) remote_desktop_->set_start_callback(std::move(callback));
+    }
+    void set_global_shortcuts_handler(BindShortcutsCallback callback) {
+        if (global_shortcuts_) global_shortcuts_->set_bind_shortcuts_callback(std::move(callback));
+    }
+    void set_inhibit_handler(InhibitChangeListener listener) {
+        if (inhibit_) inhibit_->set_inhibit_change_listener(std::move(listener));
     }
 
     PortalEventQueue& events() noexcept { return events_; }

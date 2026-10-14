@@ -42,6 +42,10 @@ void attachBackendHandlers(broportal::PortalBackend& backend) {
     backend.set_screencast_handler(handleNativeScreenCast);
     backend.set_open_uri_handler(handleNativeOpenUri);
     backend.open_uri().set_open_file_callback(handleNativeOpenFile);
+    attachSettingsBackend(backend);
+    attachInhibitBackend(backend);
+    attachGlobalShortcutsBackend(backend);
+    attachRemoteDesktopBackend(backend);
 }
 
 void setBackend(std::shared_ptr<broportal::PortalBackend> backend) {
@@ -71,6 +75,7 @@ std::shared_ptr<broportal::PortalBackend> getBackend() {
 }
 
 void setBackend(std::shared_ptr<broportal::PortalBackend>) {}
+void setBackend(broportal::PortalBackend*) {}
 #endif
 
 Value ensureBroPortal() {
@@ -113,25 +118,55 @@ void installPortal() {
 
     if (!is_avail) {
         portal.set("reason", why);
+        portal.set("interfaces", ev::makeArray(0));
         portal.def("start", 0, [](Value, std::span<const Value>) -> Value { return ev::fromBool(false); });
         portal.def("stop", 0, [](Value, std::span<const Value>) -> Value { return ev::fromBool(false); });
         portal.def("isRunning", 0, [](Value, std::span<const Value>) -> Value { return ev::fromBool(false); });
-        portal.def("onFileChooser", 1, [](Value, std::span<const Value>) -> Value {
-            return ev::throwError("Portal service is unavailable on this platform");
+        portal.def("getStatus", 0, [why](Value, std::span<const Value>) -> Value {
+            ObjectBuilder st;
+            st.set("available", false);
+            st.set("running", false);
+            st.set("reason", why);
+            st.set("interfaces", ev::makeArray(0));
+            return st.get();
         });
-        portal.def("onScreenshot", 1, [](Value, std::span<const Value>) -> Value {
-            return ev::throwError("Portal service is unavailable on this platform");
-        });
-        portal.def("onScreencast", 1, [](Value, std::span<const Value>) -> Value {
-            return ev::throwError("Portal service is unavailable on this platform");
-        });
-        portal.def("onOpenUri", 1, [](Value, std::span<const Value>) -> Value {
-            return ev::throwError("Portal service is unavailable on this platform");
-        });
+        const char* unavailMethods[] = {
+            "onFileChooser", "onScreenshot", "onPickColor", "onScreencast", "onOpenUri",
+            "onRemoteDesktop", "onRemoteDesktopStart", "onRemoteDesktopInput",
+            "onBindShortcuts", "onListShortcuts", "onConfigureShortcuts",
+            "triggerShortcutActivated", "triggerShortcutDeactivated", "notifyShortcutsChanged",
+            "onInhibit", "onQueryEndResponse", "queryEndResponse", "onStateChanged", "notifyStateChanged",
+            "setColorScheme", "setAccentColor", "setContrast", "setReducedMotion", "setSetting", "getSetting", "getSettings", "onSettingChanged"
+        };
+        for (const char* m : unavailMethods) {
+            portal.def(m, 1, [](Value, std::span<const Value>) -> Value {
+                return ev::throwError("Portal service is unavailable on this platform");
+            });
+        }
         return;
     }
 
 #if defined(__linux__)
+    auto makeInterfacesArray = []() -> Value {
+        static constexpr const char* kIfaces[] = {
+            "org.freedesktop.impl.portal.FileChooser",
+            "org.freedesktop.impl.portal.Screenshot",
+            "org.freedesktop.impl.portal.ScreenCast",
+            "org.freedesktop.impl.portal.RemoteDesktop",
+            "org.freedesktop.impl.portal.Settings",
+            "org.freedesktop.impl.portal.Inhibit",
+            "org.freedesktop.impl.portal.GlobalShortcuts",
+            "org.freedesktop.impl.portal.OpenURI"
+        };
+        ev::Persistent arr(ev::makeArray(8));
+        for (uint32_t i = 0; i < 8; ++i) {
+            ev::Persistent elem(ev::fromUtf8(kIfaces[i]));
+            arr.set(ev::setElement(arr.get(), i, elem.get()));
+        }
+        return arr.get();
+    };
+    portal.set("interfaces", makeInterfacesArray());
+
     // bro.portal.start() -> boolean
     portal.def("start", 0, [](Value, std::span<const Value>) -> Value {
         auto b = activeBackend();
@@ -159,10 +194,28 @@ void installPortal() {
         return ev::fromBool(b && b->is_running());
     });
 
+    // bro.portal.getStatus() -> object
+    portal.def("getStatus", 0, [makeInterfacesArray](Value, std::span<const Value>) -> Value {
+        auto b = activeBackend();
+        ObjectBuilder st;
+        st.set("available", true);
+        st.set("running", static_cast<bool>(b && b->is_running()));
+        st.set("busName", b ? b->config().bus_name : "");
+        st.set("bus_name", b ? b->config().bus_name : "");
+        st.set("objectPath", b ? b->config().object_path : "");
+        st.set("object_path", b ? b->config().object_path : "");
+        st.set("interfaces", makeInterfacesArray());
+        return st.get();
+    });
+
     installFileChooserOnto(portal.get());
     installScreenshotOnto(portal.get());
     installScreenCastOnto(portal.get());
     installOpenUriOnto(portal.get());
+    installSettingsOnto(portal.get());
+    installInhibitOnto(portal.get());
+    installGlobalShortcutsOnto(portal.get());
+    installRemoteDesktopOnto(portal.get());
 #endif
 }
 
@@ -177,6 +230,10 @@ void tickPortalAsync() {
     drainScreenshot();
     drainScreenCast();
     drainOpenUri();
+    drainSettings();
+    drainInhibit();
+    drainGlobalShortcuts();
+    drainRemoteDesktop();
 #endif
 
     ev::drainMicrotasks();
@@ -188,6 +245,10 @@ void shutdownPortalAsync() {
     shutdownScreenshot();
     shutdownScreenCast();
     shutdownOpenUri();
+    shutdownSettings();
+    shutdownInhibit();
+    shutdownGlobalShortcuts();
+    shutdownRemoteDesktop();
 
     auto b = activeBackend();
     if (b && b->is_running()) {

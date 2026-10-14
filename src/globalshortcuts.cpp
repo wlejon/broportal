@@ -82,7 +82,7 @@ ResponseCode GlobalShortcutsInterface::bind_shortcuts(
 }
 
 ResponseCode GlobalShortcutsInterface::list_shortcuts(
-    const ObjectPath& /*handle*/,
+    const ObjectPath& handle,
     const ObjectPath& session_handle,
     VariantMap& results) {
     auto session = backend_.get_session(session_handle);
@@ -96,6 +96,19 @@ ResponseCode GlobalShortcutsInterface::list_shortcuts(
         auto it = session_shortcuts_.find(session_handle.path);
         if (it != session_shortcuts_.end()) {
             list = it->second;
+        }
+    }
+
+    ListShortcutsCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        cb = list_callback_;
+    }
+
+    if (cb) {
+        ResponseCode code = cb(handle, session_handle, session->app_id(), list, results);
+        if (code != ResponseCode::Success) {
+            return code;
         }
     }
 
@@ -209,6 +222,24 @@ int GlobalShortcutsInterface::dbus_bind_shortcuts(sd_bus_message* m, void* userd
     }
 
     auto req = self->backend_.create_request(handle, "");
+    if (self->async_dispatch_ || self->backend_.is_background_running()) {
+        sd_bus_message_ref(m);
+        self->backend_.post_worker([self, m, req, handle, session_handle,
+                                    shortcuts = std::move(shortcuts),
+                                    parent_window = std::move(parent_window),
+                                    options = std::move(options)]() {
+            VariantMap results;
+            ResponseCode code = self->bind_shortcuts(
+                handle, session_handle, "", shortcuts, parent_window, options, results);
+            self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+                reply_msg.append_uint32(static_cast<uint32_t>(code));
+                reply_msg.append_variant_map(results);
+            });
+            if (req) req->close();
+        });
+        return 1;
+    }
+
     VariantMap results;
     ResponseCode code = self->bind_shortcuts(handle, session_handle, "", shortcuts, parent_window, options, results);
 
@@ -235,6 +266,25 @@ int GlobalShortcutsInterface::dbus_list_shortcuts(sd_bus_message* m, void* userd
     }
 
     auto req = self->backend_.create_request(handle, "");
+    bool has_list_cb = false;
+    {
+        std::lock_guard<std::mutex> lock(self->cb_mutex_);
+        has_list_cb = static_cast<bool>(self->list_callback_);
+    }
+    if (has_list_cb && (self->async_dispatch_ || self->backend_.is_background_running())) {
+        sd_bus_message_ref(m);
+        self->backend_.post_worker([self, m, req, handle, session_handle]() {
+            VariantMap results;
+            ResponseCode code = self->list_shortcuts(handle, session_handle, results);
+            self->backend_.send_method_reply_and_unref(m, [code, &results](dbus::Message& reply_msg) {
+                reply_msg.append_uint32(static_cast<uint32_t>(code));
+                reply_msg.append_variant_map(results);
+            });
+            if (req) req->close();
+        });
+        return 1;
+    }
+
     VariantMap results;
     ResponseCode code = self->list_shortcuts(handle, session_handle, results);
 

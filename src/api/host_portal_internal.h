@@ -82,21 +82,72 @@ ResponseCode handleNativeOpenFile(
     const VariantMap& options,
     VariantMap& out_results);
 
+ResponseCode handleNativeRemoteDesktopStart(
+    const ObjectPath& handle,
+    const ObjectPath& session_handle,
+    const std::string& app_id,
+    uint32_t& devices,
+    VariantMap& out_results);
+
+ResponseCode handleNativeBindShortcuts(
+    const ObjectPath& handle,
+    const ObjectPath& session_handle,
+    const std::string& app_id,
+    const ShortcutList& shortcuts,
+    ShortcutList& out_bound_shortcuts,
+    VariantMap& out_results);
+
+ResponseCode handleNativeListShortcuts(
+    const ObjectPath& handle,
+    const ObjectPath& session_handle,
+    const std::string& app_id,
+    ShortcutList& out_shortcuts,
+    VariantMap& out_results);
+
+void handleNativeConfigureShortcuts(
+    const ObjectPath& session_handle,
+    const std::string& parent_window,
+    const VariantMap& options);
+
+void handleNativeInhibitChange(bool added, const InhibitEntry& entry);
+void handleNativeQueryEndResponse(const ObjectPath& session_handle);
+void handleNativeSettingChanged(
+    const std::string& ns,
+    const std::string& key,
+    const Variant& value);
+
+void attachRemoteDesktopBackend(broportal::PortalBackend& backend);
+void attachGlobalShortcutsBackend(broportal::PortalBackend& backend);
+void attachInhibitBackend(broportal::PortalBackend& backend);
+void attachSettingsBackend(broportal::PortalBackend& backend);
+
 // The handler bridges (native_*.cpp): Linux only, like the backend they serve.
 void installFileChooserOnto(Value portalObj);
 void installScreenshotOnto(Value portalObj);
 void installScreenCastOnto(Value portalObj);
 void installOpenUriOnto(Value portalObj);
+void installSettingsOnto(Value portalObj);
+void installInhibitOnto(Value portalObj);
+void installGlobalShortcutsOnto(Value portalObj);
+void installRemoteDesktopOnto(Value portalObj);
 
 void drainFileChooser();
 void drainScreenshot();
 void drainScreenCast();
 void drainOpenUri();
+void drainSettings();
+void drainInhibit();
+void drainGlobalShortcuts();
+void drainRemoteDesktop();
 
 void shutdownFileChooser();
 void shutdownScreenshot();
 void shutdownScreenCast();
 void shutdownOpenUri();
+void shutdownSettings();
+void shutdownInhibit();
+void shutdownGlobalShortcuts();
+void shutdownRemoteDesktop();
 #endif
 
 inline Value variantToJs(const Variant& var) {
@@ -129,11 +180,20 @@ inline Value variantToJs(const Variant& var) {
         return arr.get();
     }
     if (const auto* c = var.get_if<RgbColor>()) {
-        ObjectBuilder col;
-        col.set("r", c->r);
-        col.set("g", c->g);
-        col.set("b", c->b);
-        return col.get();
+        ev::Persistent arr(ev::makeArray(3));
+        arr.set(ev::setElement(arr.get(), 0, ev::fromDouble(c->r)));
+        arr.set(ev::setElement(arr.get(), 1, ev::fromDouble(c->g)));
+        arr.set(ev::setElement(arr.get(), 2, ev::fromDouble(c->b)));
+        arr.set(ev::setProperty(arr.get(), "r", ev::fromDouble(c->r)));
+        arr.set(ev::setProperty(arr.get(), "g", ev::fromDouble(c->g)));
+        arr.set(ev::setProperty(arr.get(), "b", ev::fromDouble(c->b)));
+        return arr.get();
+    }
+    if (const auto* c2 = var.get_if<Coord2D>()) {
+        ObjectBuilder pt;
+        pt.set("x", static_cast<double>(c2->x));
+        pt.set("y", static_cast<double>(c2->y));
+        return pt.get();
     }
     if (const auto* m = var.get_if<VariantMap>()) {
         ObjectBuilder obj;
@@ -141,6 +201,33 @@ inline Value variantToJs(const Variant& var) {
             obj.set(k, variantToJs(v));
         }
         return obj.get();
+    }
+    if (const auto* sm = var.get_if<SettingsMap>()) {
+        ObjectBuilder outer;
+        for (const auto& [ns, dict] : *sm) {
+            ObjectBuilder inner;
+            for (const auto& [k, v] : dict) {
+                inner.set(k, variantToJs(v));
+            }
+            outer.set(ns, inner.get());
+        }
+        return outer.get();
+    }
+    if (const auto* sl = var.get_if<ShortcutList>()) {
+        ev::Persistent arr(ev::makeArray(static_cast<uint32_t>(sl->size())));
+        for (uint32_t i = 0; i < sl->size(); ++i) {
+            ObjectBuilder item;
+            item.set("id", (*sl)[i].first);
+            item.set("shortcutId", (*sl)[i].first);
+            item.set("shortcut_id", (*sl)[i].first);
+            ObjectBuilder props;
+            for (const auto& [k, v] : (*sl)[i].second) {
+                props.set(k, variantToJs(v));
+            }
+            item.set("properties", props.get());
+            arr.set(ev::setElement(arr.get(), i, item.get()));
+        }
+        return arr.get();
     }
     return ev::undefined();
 }

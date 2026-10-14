@@ -101,12 +101,28 @@ int main() {
 
     // Verify required methods
     const char* methods[] = {
-        "start", "stop", "isRunning",
+        "start", "stop", "isRunning", "getStatus",
         "onFileChooser", "offFileChooser",
         "onScreenshot", "offScreenshot",
         "onPickColor", "offPickColor",
         "onScreencast", "offScreencast",
-        "onOpenUri", "offOpenUri"
+        "onOpenUri", "offOpenUri",
+        "setColorScheme", "getColorScheme",
+        "setAccentColor", "getAccentColor",
+        "setContrast", "getContrast",
+        "setReducedMotion", "getReducedMotion",
+        "setSetting", "getSetting", "getSettings",
+        "onSettingChanged", "offSettingChanged",
+        "onInhibit", "offInhibit",
+        "onQueryEndResponse", "offQueryEndResponse", "queryEndResponse",
+        "onStateChanged", "offStateChanged", "notifyStateChanged",
+        "getActiveInhibitions", "isInhibited",
+        "onBindShortcuts", "offBindShortcuts",
+        "onListShortcuts", "offListShortcuts",
+        "onConfigureShortcuts", "offConfigureShortcuts",
+        "triggerShortcutActivated", "triggerShortcutDeactivated", "notifyShortcutsChanged",
+        "onRemoteDesktop", "offRemoteDesktop",
+        "onRemoteDesktopInput", "offRemoteDesktopInput"
     };
     for (const char* m : methods) {
         auto fn = ev::getProperty(portal.get(), m);
@@ -136,7 +152,16 @@ int main() {
         auto rRunning = evalScript("bro.portal.isRunning()");
         CHECK(!rRunning.thrown);
         CHECK(ev::isBool(rRunning.value) && ev::toBool(rRunning.value));
-        std::cout << "  bro.portal.start() -> running [PASS]" << std::endl;
+
+        auto rStatus = evalScript(
+            "(() => {\n"
+            "  const st = bro.portal.getStatus();\n"
+            "  return st.available === true && st.running === true && st.interfaces.length === 8;\n"
+            "})()"
+        );
+        CHECK(!rStatus.thrown);
+        CHECK(ev::isBool(rStatus.value) && ev::toBool(rStatus.value));
+        std::cout << "  bro.portal.start() & getStatus() -> running [PASS]" << std::endl;
     }
 
     // 4. Test FileChooser
@@ -504,7 +529,411 @@ int main() {
         evalScript("globalThis._uri2.dispose()");
     }
 
-    // 8. Test stop() and shutdownPortalAsync()
+    // 8. Test Settings
+    std::cout << "Testing Settings..." << std::endl;
+    {
+        std::vector<std::pair<std::string, std::string>> dbusSettingSignals;
+        auto settingSlot = f.client->add_match(
+            "type='signal',interface='org.freedesktop.impl.portal.Settings',member='SettingChanged'",
+            [&](dbus::Message& m) {
+                std::string ns, key;
+                m.read_string(&ns);
+                m.read_string(&key);
+                dbusSettingSignals.emplace_back(ns, key);
+            });
+        REQUIRE(settingSlot.is_valid());
+        while (f.client->process() > 0) {}
+
+        auto rObs = evalScript(
+            "globalThis._settingEvents = [];\n"
+            "globalThis._setObs = bro.portal.onSettingChanged((ev) => {\n"
+            "  globalThis._settingEvents.push(ev.namespace + ':' + ev.key);\n"
+            "});\n"
+        );
+        CHECK(!rObs.thrown);
+
+        // setColorScheme: string ('dark', 'light', 'default') and numeric (0, 1, 2)
+        CHECK(!evalScript("bro.portal.setColorScheme('dark')").thrown);
+        CHECK_EQ(ev::toDouble(evalScript("bro.portal.getColorScheme()").value), 1.0);
+        CHECK(!evalScript("bro.portal.setColorScheme('light')").thrown);
+        CHECK_EQ(ev::toDouble(evalScript("bro.portal.getColorScheme()").value), 2.0);
+        CHECK(!evalScript("bro.portal.setColorScheme(1)").thrown);
+        CHECK_EQ(ev::toDouble(evalScript("bro.portal.getColorScheme()").value), 1.0);
+
+        // Verify via D-Bus Settings.Read
+        Variant dbusScheme;
+        CHECK(f.call("org.freedesktop.impl.portal.Settings", "Read",
+            [](dbus::Message& m) {
+                m.append_string("org.freedesktop.appearance");
+                m.append_string("color-scheme");
+            },
+            [&](dbus::Message& reply) {
+                reply.read_variant(&dbusScheme);
+            }));
+        CHECK_EQ(dbusScheme.get_value_or<uint32_t>(99), 1u);
+
+        // setAccentColor: [r, g, b] array and { r, g, b } object
+        auto rAcc = evalScript(
+            "bro.portal.setAccentColor([0.25, 0.5, 0.75]);\n"
+            "const ac = bro.portal.getAccentColor();\n"
+            "Math.abs(ac[0] - 0.25) < 1e-4 && Math.abs(ac[1] - 0.5) < 1e-4 && Math.abs(ac[2] - 0.75) < 1e-4 &&\n"
+            "Math.abs(ac.r - 0.25) < 1e-4 && Math.abs(ac.g - 0.5) < 1e-4 && Math.abs(ac.b - 0.75) < 1e-4\n"
+        );
+        CHECK(!rAcc.thrown);
+        CHECK(ev::isBool(rAcc.value) && ev::toBool(rAcc.value));
+
+        Variant dbusAccent;
+        CHECK(f.call("org.freedesktop.impl.portal.Settings", "Read",
+            [](dbus::Message& m) {
+                m.append_string("org.freedesktop.appearance");
+                m.append_string("accent-color");
+            },
+            [&](dbus::Message& reply) {
+                reply.read_variant(&dbusAccent);
+            }));
+        const auto* rgb = dbusAccent.get_if<RgbColor>();
+        REQUIRE(rgb != nullptr);
+        CHECK(std::abs(rgb->r - 0.25) < 1e-4);
+        CHECK(std::abs(rgb->g - 0.5) < 1e-4);
+        CHECK(std::abs(rgb->b - 0.75) < 1e-4);
+
+        // setContrast: 'high', 'normal', 1, 0
+        CHECK(!evalScript("bro.portal.setContrast('high')").thrown);
+        CHECK_EQ(ev::toDouble(evalScript("bro.portal.getContrast()").value), 1.0);
+        CHECK(!evalScript("bro.portal.setContrast('normal')").thrown);
+        CHECK_EQ(ev::toDouble(evalScript("bro.portal.getContrast()").value), 0.0);
+        CHECK(!evalScript("bro.portal.setContrast(1)").thrown);
+
+        // setSetting & getSettings
+        auto rCustomSet = evalScript(
+            "bro.portal.setSetting('org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark');\n"
+            "const all = bro.portal.getSettings();\n"
+            "all['org.freedesktop.appearance']['color-scheme'] === 1 &&\n"
+            "all['org.freedesktop.appearance']['contrast'] === 1 &&\n"
+            "all['org.gnome.desktop.interface']['gtk-theme'] === 'Adwaita-dark' &&\n"
+            "bro.portal.getSetting('org.gnome.desktop.interface', 'gtk-theme') === 'Adwaita-dark'\n"
+        );
+        CHECK(!rCustomSet.thrown);
+        CHECK(ev::isBool(rCustomSet.value) && ev::toBool(rCustomSet.value));
+
+        // Pump D-Bus client and JS observer
+        broportal::api::tickPortalAsync();
+        for (int i = 0; i < 40 && dbusSettingSignals.size() < 4; ++i) {
+            f.client->wait(10000);
+            while (f.client->process() > 0) {}
+        }
+        CHECK(dbusSettingSignals.size() >= 4);
+
+        auto rObsCount = evalScript("globalThis._settingEvents.length >= 4");
+        CHECK(!rObsCount.thrown);
+        CHECK(ev::isBool(rObsCount.value) && ev::toBool(rObsCount.value));
+        evalScript("globalThis._setObs.dispose()");
+        std::cout << "  Settings (setColorScheme, setAccentColor, setContrast, setSetting, getSettings, SettingChanged) [PASS]" << std::endl;
+    }
+
+    // 9. Test Inhibit
+    std::cout << "Testing Inhibit..." << std::endl;
+    {
+        auto rInhReg = evalScript(
+            "globalThis._inhEvents = [];\n"
+            "globalThis._qeEvents = [];\n"
+            "globalThis._stEvents = [];\n"
+            "globalThis._inhH = bro.portal.onInhibit((ev) => {\n"
+            "  globalThis._inhEvents.push({ added: ev.added, appId: ev.appId, flags: ev.flags, reason: ev.reason, suspend: ev.suspend, idle: ev.idle });\n"
+            "});\n"
+            "globalThis._qeH = bro.portal.onQueryEndResponse((ev) => {\n"
+            "  globalThis._qeEvents.push(ev.sessionHandle);\n"
+            "});\n"
+            "globalThis._stH = bro.portal.onStateChanged((ev) => {\n"
+            "  globalThis._stEvents.push(ev.sessionState);\n"
+            "});\n"
+        );
+        CHECK(!rInhReg.thrown);
+
+        const std::string inhReq = "/org/freedesktop/portal/desktop/request/api_inh_1";
+        CHECK(f.call("org.freedesktop.impl.portal.Inhibit", "Inhibit",
+            [&](dbus::Message& m) {
+                m.append_object_path(ObjectPath{inhReq});
+                m.append_string("org.example.VideoPlayer");
+                m.append_string("main_win");
+                m.append_uint32(12u); // Suspend (4) | Idle (8)
+                VariantMap opts;
+                opts["reason"] = Variant(std::string("Playing movie"));
+                m.append_variant_map(opts);
+            },
+            nullptr));
+
+        broportal::api::tickPortalAsync();
+
+        auto rInhCheck = evalScript(
+            "globalThis._inhEvents.length === 1 &&\n"
+            "globalThis._inhEvents[0].added === true &&\n"
+            "globalThis._inhEvents[0].appId === 'org.example.VideoPlayer' &&\n"
+            "globalThis._inhEvents[0].flags === 12 &&\n"
+            "globalThis._inhEvents[0].reason === 'Playing movie' &&\n"
+            "globalThis._inhEvents[0].suspend === true &&\n"
+            "globalThis._inhEvents[0].idle === true &&\n"
+            "bro.portal.isInhibited('suspend') === true &&\n"
+            "bro.portal.isInhibited('idle') === true &&\n"
+            "bro.portal.isInhibited('logout') === false &&\n"
+            "bro.portal.getActiveInhibitions().length === 1\n"
+        );
+        CHECK(!rInhCheck.thrown);
+        CHECK(ev::isBool(rInhCheck.value) && ev::toBool(rInhCheck.value));
+
+        // Close inhibition request via D-Bus Request.Close
+        CHECK(f.client->call_method(f.config.bus_name, inhReq, "org.freedesktop.impl.portal.Request", "Close",
+                                    nullptr, nullptr));
+        for (int i = 0; i < 20; ++i) {
+            broportal::api::tickPortalAsync();
+            if (!f.backend->inhibit().is_inhibited(InhibitFlag::Idle)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        broportal::api::tickPortalAsync();
+
+        auto rInhRemoved = evalScript(
+            "globalThis._inhEvents.length === 2 &&\n"
+            "globalThis._inhEvents[1].added === false &&\n"
+            "bro.portal.isInhibited() === false\n"
+        );
+        CHECK(!rInhRemoved.thrown);
+        CHECK(ev::isBool(rInhRemoved.value) && ev::toBool(rInhRemoved.value));
+
+        // CreateMonitor, notifyStateChanged, QueryEndResponse
+        const std::string monSess = "/org/freedesktop/portal/desktop/session/api_inh_mon_1";
+        uint32_t monCode = 999;
+        CHECK(f.call("org.freedesktop.impl.portal.Inhibit", "CreateMonitor",
+            [&](dbus::Message& m) {
+                m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/api_inh_mon_req"});
+                m.append_object_path(ObjectPath{monSess});
+                m.append_string("org.example.VideoPlayer");
+                m.append_string("");
+            },
+            [&](dbus::Message& reply) {
+                reply.read_uint32(&monCode);
+            }));
+        CHECK_EQ(monCode, 0u);
+
+        uint32_t seenSessionState = 0;
+        bool seenScreensaver = false;
+        auto stateSlot = f.client->add_match(
+            "type='signal',interface='org.freedesktop.impl.portal.Inhibit',member='StateChanged'",
+            [&](dbus::Message& m) {
+                ObjectPath p;
+                VariantMap st;
+                m.read_object_path(&p);
+                m.read_variant_map(&st);
+                seenScreensaver = get_bool_or(st, "screensaver-active", false);
+                seenSessionState = get_uint32_or(st, "session-state", 0);
+            });
+        REQUIRE(stateSlot.is_valid());
+        while (f.client->process() > 0) {}
+
+        CHECK(!evalScript("bro.portal.notifyStateChanged(true, 'query-end')").thrown);
+        broportal::api::tickPortalAsync();
+        for (int i = 0; i < 40 && seenSessionState == 0; ++i) {
+            f.client->wait(10000);
+            while (f.client->process() > 0) {}
+        }
+        CHECK(seenScreensaver);
+        CHECK_EQ(seenSessionState, static_cast<uint32_t>(SessionState::QueryEnd));
+
+        CHECK(f.call("org.freedesktop.impl.portal.Inhibit", "QueryEndResponse",
+            [&](dbus::Message& m) {
+                m.append_object_path(ObjectPath{monSess});
+            },
+            nullptr));
+        broportal::api::tickPortalAsync();
+
+        auto rQeCheck = evalScript(
+            "globalThis._qeEvents.length === 1 && globalThis._qeEvents[0] === '" + monSess + "' &&\n"
+            "globalThis._stEvents.length === 1 && globalThis._stEvents[0] === 2\n"
+        );
+        CHECK(!rQeCheck.thrown);
+        CHECK(ev::isBool(rQeCheck.value) && ev::toBool(rQeCheck.value));
+
+        evalScript("globalThis._inhH.dispose(); globalThis._qeH.dispose(); globalThis._stH.dispose();");
+        std::cout << "  Inhibit (onInhibit, notifyStateChanged, onStateChanged, onQueryEndResponse) [PASS]" << std::endl;
+    }
+
+    // 10. Test GlobalShortcuts
+    std::cout << "Testing GlobalShortcuts..." << std::endl;
+    {
+        auto rGsReg = evalScript(
+            "globalThis._gsBind = bro.portal.onBindShortcuts((req) => ({\n"
+            "  shortcuts: req.shortcuts.map((s) => ({ id: s.id, description: s.description, triggerDescription: 'Ctrl+Shift+' + (s.preferredTrigger || 'K') }))\n"
+            "}));\n"
+        );
+        CHECK(!rGsReg.thrown);
+
+        const std::string gsSess = "/org/freedesktop/portal/desktop/session/api_gs_sess_1";
+        auto repGsCreate = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.GlobalShortcuts", "CreateSession",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/api_gs_cs"});
+                    m.append_object_path(ObjectPath{gsSess});
+                    m.append_string("org.example.ShortcutsApp");
+                    m.append_variant_map({});
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repGsCreate.code, 0u);
+
+        std::vector<std::string> gsSignals;
+        auto gsSlot = f.client->add_match(
+            "type='signal',interface='org.freedesktop.impl.portal.GlobalShortcuts'",
+            [&](dbus::Message& m) {
+                ObjectPath p;
+                m.read_object_path(&p);
+                std::string member = sd_bus_message_get_member(m.raw());
+                if (member == "Activated" || member == "Deactivated") {
+                    std::string id;
+                    uint64_t ts = 0;
+                    m.read_string(&id);
+                    m.read_uint64(&ts);
+                    gsSignals.push_back(member + ":" + id + ":" + std::to_string(ts));
+                }
+            });
+        REQUIRE(gsSlot.is_valid());
+        while (f.client->process() > 0) {}
+
+        auto repGsBind = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.GlobalShortcuts", "BindShortcuts",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/api_gs_bind"});
+                    m.append_object_path(ObjectPath{gsSess});
+                    ShortcutList wanted;
+                    VariantMap p;
+                    p["description"] = Variant(std::string("Mute Mic"));
+                    p["preferred_trigger"] = Variant(std::string("M"));
+                    wanted.emplace_back("mute_mic", p);
+                    m.append_shortcut_list(wanted);
+                    m.append_string("");
+                    m.append_variant_map({});
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repGsBind.code, 0u);
+        const auto* boundList = repGsBind.results["shortcuts"].get_if<ShortcutList>();
+        REQUIRE(boundList != nullptr && boundList->size() == 1);
+        CHECK_EQ((*boundList)[0].first, std::string("mute_mic"));
+        CHECK_EQ(get_string((*boundList)[0].second, "trigger_description").value_or(""), std::string("Ctrl+Shift+M"));
+
+        auto rGsListReg = evalScript("globalThis._gsList = bro.portal.onListShortcuts((req) => ({ shortcuts: req.shortcuts }));");
+        CHECK(!rGsListReg.thrown);
+
+        auto repGsList = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.GlobalShortcuts", "ListShortcuts",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/api_gs_list"});
+                    m.append_object_path(ObjectPath{gsSess});
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repGsList.code, 0u);
+        const auto* listed = repGsList.results["shortcuts"].get_if<ShortcutList>();
+        REQUIRE(listed != nullptr && listed->size() == 1);
+        CHECK_EQ((*listed)[0].first, std::string("mute_mic"));
+
+        CHECK(!evalScript("bro.portal.triggerShortcutActivated('" + gsSess + "', 'mute_mic', 555000)").thrown);
+        CHECK(!evalScript("bro.portal.triggerShortcutDeactivated('" + gsSess + "', 'mute_mic', 556000)").thrown);
+
+        for (int i = 0; i < 40 && gsSignals.size() < 2; ++i) {
+            f.client->wait(10000);
+            while (f.client->process() > 0) {}
+        }
+        REQUIRE(gsSignals.size() >= 2);
+        CHECK_EQ(gsSignals[0], std::string("Activated:mute_mic:555000"));
+        CHECK_EQ(gsSignals[1], std::string("Deactivated:mute_mic:556000"));
+
+        evalScript("globalThis._gsBind.dispose(); globalThis._gsList.dispose();");
+        std::cout << "  GlobalShortcuts (onBindShortcuts, onListShortcuts, triggerShortcutActivated/Deactivated) [PASS]" << std::endl;
+    }
+
+    // 11. Test RemoteDesktop
+    std::cout << "Testing RemoteDesktop..." << std::endl;
+    {
+        auto rRdReg = evalScript(
+            "globalThis._rdInputs = [];\n"
+            "globalThis._rdStart = bro.portal.onRemoteDesktop((req) => ({ devices: req.devices, clipboardEnabled: true }));\n"
+            "globalThis._rdIn = bro.portal.onRemoteDesktopInput((ev) => { globalThis._rdInputs.push(ev); });\n"
+        );
+        CHECK(!rRdReg.thrown);
+
+        const std::string rdSess = "/org/freedesktop/portal/desktop/session/api_rd_sess_1";
+        auto repRdCreate = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.RemoteDesktop", "CreateSession",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/api_rd_cs"});
+                    m.append_object_path(ObjectPath{rdSess});
+                    m.append_string("org.example.RemoteApp");
+                    m.append_variant_map({});
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repRdCreate.code, 0u);
+
+        auto repRdSelect = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.RemoteDesktop", "SelectDevices",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/api_rd_sel"});
+                    m.append_object_path(ObjectPath{rdSess});
+                    m.append_string("org.example.RemoteApp");
+                    VariantMap opts;
+                    opts["types"] = Variant(static_cast<uint32_t>(3)); // Keyboard (1) | Pointer (2)
+                    m.append_variant_map(opts);
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repRdSelect.code, 0u);
+
+        auto repRdStart = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.RemoteDesktop", "Start",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/api_rd_start"});
+                    m.append_object_path(ObjectPath{rdSess});
+                    m.append_string("org.example.RemoteApp");
+                    m.append_string("");
+                    m.append_variant_map({});
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repRdStart.code, 0u);
+        CHECK_EQ(get_uint32_or(repRdStart.results, "devices", 0), 3u);
+        CHECK(get_bool_or(repRdStart.results, "clipboard_enabled", false));
+
+        CHECK(f.call("org.freedesktop.impl.portal.RemoteDesktop", "NotifyKeyboardKeycode",
+            [&](dbus::Message& m) { m.append_object_path(ObjectPath{rdSess}); m.append_variant_map({}); m.append_int32(30); m.append_uint32(1); }, nullptr));
+        CHECK(f.call("org.freedesktop.impl.portal.RemoteDesktop", "NotifyPointerMotion",
+            [&](dbus::Message& m) { m.append_object_path(ObjectPath{rdSess}); m.append_variant_map({}); m.append_double(15.5); m.append_double(-6.25); }, nullptr));
+
+        broportal::api::tickPortalAsync();
+
+        auto rRdInCheck = evalScript(
+            "globalThis._rdInputs.length === 2 &&\n"
+            "globalThis._rdInputs[0].type === 'keyboard_keycode' && globalThis._rdInputs[0].keycode === 30 && globalThis._rdInputs[0].state === 1 &&\n"
+            "globalThis._rdInputs[1].type === 'pointer_motion' && globalThis._rdInputs[1].dx === 15.5 && globalThis._rdInputs[1].dy === -6.25\n"
+        );
+        CHECK(!rRdInCheck.thrown);
+        CHECK(ev::isBool(rRdInCheck.value) && ev::toBool(rRdInCheck.value));
+
+        evalScript("globalThis._rdStart.dispose(); globalThis._rdIn.dispose();");
+        std::cout << "  RemoteDesktop (onRemoteDesktop, onRemoteDesktopInput) [PASS]" << std::endl;
+    }
+
+    // 12. Test stop() and shutdownPortalAsync()
     std::cout << "Testing stop() and shutdown..." << std::endl;
     {
         auto rStop = evalScript("bro.portal.stop()");

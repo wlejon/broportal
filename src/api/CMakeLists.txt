@@ -11,7 +11,11 @@ if(BROPORTAL_LINUX)
         native_filechooser.cpp
         native_screenshot.cpp
         native_screencast.cpp
-        native_openuri.cpp)
+        native_openuri.cpp
+        native_settings.cpp
+        native_inhibit.cpp
+        native_globalshortcuts.cpp
+        native_remotedesktop.cpp)
 endif()
 
 target_include_directories(broportal_api PUBLIC

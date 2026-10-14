@@ -21,6 +21,13 @@ using BindShortcutsCallback = std::function<ResponseCode(
     ShortcutList& out_bound_shortcuts,
     VariantMap& out_results)>;
 
+using ListShortcutsCallback = std::function<ResponseCode(
+    const ObjectPath& handle,
+    const ObjectPath& session_handle,
+    const std::string& app_id,
+    ShortcutList& out_shortcuts,
+    VariantMap& out_results)>;
+
 class GlobalShortcutsInterface {
 public:
     explicit GlobalShortcutsInterface(PortalBackend& backend);
@@ -34,6 +41,11 @@ public:
         bind_callback_ = std::move(callback);
     }
 
+    void set_list_shortcuts_callback(ListShortcutsCallback callback) {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        list_callback_ = std::move(callback);
+    }
+
     // Opens the host's shortcut settings (ConfigureShortcuts). Without one,
     // ConfigureShortcuts answers org.freedesktop.DBus.Error.NotSupported.
     void set_configure_callback(std::function<void(const ObjectPath& session_handle,
@@ -41,6 +53,10 @@ public:
                                                    const VariantMap& options)> callback) {
         std::lock_guard<std::mutex> lock(cb_mutex_);
         configure_callback_ = std::move(callback);
+    }
+
+    void set_async_dispatch(bool enabled) noexcept {
+        async_dispatch_ = enabled;
     }
 
     ResponseCode create_session(
@@ -103,7 +119,9 @@ private:
     mutable std::mutex cb_mutex_;
     std::map<std::string, ShortcutList> session_shortcuts_;
     BindShortcutsCallback bind_callback_;
+    ListShortcutsCallback list_callback_;
     std::function<void(const ObjectPath&, const std::string&, const VariantMap&)> configure_callback_;
+    bool async_dispatch_ = false;
 };
 
 } // namespace broportal

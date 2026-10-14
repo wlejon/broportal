@@ -137,6 +137,20 @@ Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.S
 default=bro
 ```
 
+### Bronze JavaScript API (`bro.portal`)
+
+When `BROPORTAL_ENABLE_API` is enabled, `broportal_api` mounts `bro.portal` into the active Bronze realm, exposing all eight portal interfaces to JavaScript:
+
+- **Lifecycle & status**: `bro.portal.start()`, `bro.portal.stop()`, `bro.portal.isRunning()`, `bro.portal.getStatus()`, `bro.portal.interfaces`
+- **FileChooser**: `onFileChooser(handler)`, `offFileChooser(handle)`
+- **Screenshot**: `onScreenshot(handler)`, `offScreenshot(handle)`, `onPickColor(handler)`, `offPickColor(handle)`
+- **ScreenCast**: `onScreencast(handler)`, `offScreencast(handle)`
+- **RemoteDesktop**: `onRemoteDesktop(handler)`, `offRemoteDesktop(handle)`, `onRemoteDesktopInput(handler)`, `offRemoteDesktopInput(handle)`
+- **Settings**: `setColorScheme(scheme)`, `getColorScheme()`, `setAccentColor([r, g, b])`, `getAccentColor()`, `setContrast(contrast)`, `getContrast()`, `setReducedMotion(motion)`, `getReducedMotion()`, `setSetting(ns, key, val)`, `getSetting(ns, key)`, `getSettings([namespaces])`, `onSettingChanged(handler)`, `offSettingChanged(handle)`
+- **Inhibit**: `onInhibit(handler)`, `offInhibit(handle)`, `onQueryEndResponse(handler)`, `offQueryEndResponse(handle)`, `queryEndResponse(sessionOrHandler)`, `onStateChanged(handler)`, `offStateChanged(handle)`, `notifyStateChanged(screensaverActive, sessionState)`, `getActiveInhibitions()`, `isInhibited([flag])`
+- **GlobalShortcuts**: `onBindShortcuts(handler)`, `offBindShortcuts(handle)`, `onListShortcuts(handler)`, `offListShortcuts(handle)`, `onConfigureShortcuts(handler)`, `offConfigureShortcuts(handle)`, `triggerShortcutActivated(sessionHandle, shortcutId[, timestamp])`, `triggerShortcutDeactivated(sessionHandle, shortcutId[, timestamp])`, `notifyShortcutsChanged(sessionHandle, shortcuts)`
+- **OpenURI**: `onOpenUri(handler)`, `offOpenUri(handle)`
+
 ### Thread safety and non-blocking execution
 
 - **Thread-safe connection and setters**: Signal-emitting setters (`set_setting`,
