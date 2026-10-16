@@ -221,7 +221,16 @@ void installPortal() {
 
 void tickPortalAsync() {
 #if defined(__linux__)
-    auto b = activeBackend();
+    // The backend that exists, if any: the tick never makes one (a session
+    // bus connection and a worker pool), only bro.portal's calls do.
+    std::shared_ptr<broportal::PortalBackend> b;
+    {
+        std::lock_guard lock(g_backend_mu);
+        if (g_custom_backend) b = g_custom_backend;
+        else if (g_custom_backend_raw)
+            b = std::shared_ptr<broportal::PortalBackend>(std::shared_ptr<void>{}, g_custom_backend_raw);
+        else b = g_default_backend;
+    }
     if (b && b->is_running()) {
         b->process();
     }
