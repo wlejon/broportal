@@ -468,20 +468,36 @@ void drainGlobalShortcuts() {
                 if (entry.callback) callbacks.push_back(entry.callback);
             }
         }
-        if (!toDispatch.empty() && !callbacks.empty()) {
-            for (const auto& req : toDispatch) {
-                ev::Persistent reqObj(buildBindShortcutsRequest(req));
-                for (const auto& cb : callbacks) {
-                    if (!cb || !ev::isFunction(cb->get())) continue;
-                    const Value arg = reqObj.get();
-                    ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
-                    if (ev::isPromise(retVal.get())) {
-                        attachPromiseReaction(
-                            retVal.get(),
-                            [req](Value val) { parseAndFulfillBindShortcuts(req, val); },
-                            [req](Value) { fulfillBindShortcuts(req, ResponseCode::Cancelled, {}); });
-                    } else if (ev::isObject(retVal.get())) {
-                        parseAndFulfillBindShortcuts(req, retVal.get());
+        if (!toDispatch.empty()) {
+            if (callbacks.empty()) {
+                for (const auto& req : toDispatch) {
+                    fulfillBindShortcuts(req, ResponseCode::OtherError, {});
+                }
+            } else {
+                for (const auto& req : toDispatch) {
+                    ev::Persistent reqObj(buildBindShortcutsRequest(req));
+                    bool hasPendingPromise = false;
+                    for (const auto& cb : callbacks) {
+                        if (!cb || !ev::isFunction(cb->get())) continue;
+                        const Value arg = reqObj.get();
+                        auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+                        if (callRes.thrown) continue;
+                        ev::Persistent retVal(callRes.value);
+                        if (ev::isPromise(retVal.get())) {
+                            hasPendingPromise = true;
+                            attachPromiseReaction(
+                                retVal.get(),
+                                [req](Value val) {
+                                    parseAndFulfillBindShortcuts(req, val);
+                                    fulfillBindShortcuts(req, ResponseCode::OtherError, {});
+                                },
+                                [req](Value) { fulfillBindShortcuts(req, ResponseCode::Cancelled, {}); });
+                        } else if (ev::isObject(retVal.get())) {
+                            parseAndFulfillBindShortcuts(req, retVal.get());
+                        }
+                    }
+                    if (!hasPendingPromise) {
+                        fulfillBindShortcuts(req, ResponseCode::OtherError, {});
                     }
                 }
             }
@@ -499,20 +515,36 @@ void drainGlobalShortcuts() {
                 if (entry.callback) callbacks.push_back(entry.callback);
             }
         }
-        if (!toDispatch.empty() && !callbacks.empty()) {
-            for (const auto& req : toDispatch) {
-                ev::Persistent reqObj(buildListShortcutsRequest(req));
-                for (const auto& cb : callbacks) {
-                    if (!cb || !ev::isFunction(cb->get())) continue;
-                    const Value arg = reqObj.get();
-                    ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
-                    if (ev::isPromise(retVal.get())) {
-                        attachPromiseReaction(
-                            retVal.get(),
-                            [req](Value val) { parseAndFulfillListShortcuts(req, val); },
-                            [req](Value) { fulfillListShortcuts(req, ResponseCode::Cancelled, {}); });
-                    } else if (ev::isObject(retVal.get())) {
-                        parseAndFulfillListShortcuts(req, retVal.get());
+        if (!toDispatch.empty()) {
+            if (callbacks.empty()) {
+                for (const auto& req : toDispatch) {
+                    fulfillListShortcuts(req, ResponseCode::OtherError, {});
+                }
+            } else {
+                for (const auto& req : toDispatch) {
+                    ev::Persistent reqObj(buildListShortcutsRequest(req));
+                    bool hasPendingPromise = false;
+                    for (const auto& cb : callbacks) {
+                        if (!cb || !ev::isFunction(cb->get())) continue;
+                        const Value arg = reqObj.get();
+                        auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+                        if (callRes.thrown) continue;
+                        ev::Persistent retVal(callRes.value);
+                        if (ev::isPromise(retVal.get())) {
+                            hasPendingPromise = true;
+                            attachPromiseReaction(
+                                retVal.get(),
+                                [req](Value val) {
+                                    parseAndFulfillListShortcuts(req, val);
+                                    fulfillListShortcuts(req, ResponseCode::OtherError, {});
+                                },
+                                [req](Value) { fulfillListShortcuts(req, ResponseCode::Cancelled, {}); });
+                        } else if (ev::isObject(retVal.get())) {
+                            parseAndFulfillListShortcuts(req, retVal.get());
+                        }
+                    }
+                    if (!hasPendingPromise) {
+                        fulfillListShortcuts(req, ResponseCode::OtherError, {});
                     }
                 }
             }

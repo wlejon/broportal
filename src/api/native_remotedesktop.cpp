@@ -394,21 +394,37 @@ void drainRemoteDesktop() {
             }
         }
 
-        if (!toDispatch.empty() && !callbacks.empty()) {
-            for (const auto& req : toDispatch) {
-                ev::Persistent reqObj(buildRemoteDesktopRequest(req));
-                for (const auto& cb : callbacks) {
-                    if (!cb || !ev::isFunction(cb->get())) continue;
-                    const Value arg = reqObj.get();
-                    ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
+        if (!toDispatch.empty()) {
+            if (callbacks.empty()) {
+                for (const auto& req : toDispatch) {
+                    fulfillRemoteDesktop(req, ResponseCode::OtherError, 0);
+                }
+            } else {
+                for (const auto& req : toDispatch) {
+                    ev::Persistent reqObj(buildRemoteDesktopRequest(req));
+                    bool hasPendingPromise = false;
+                    for (const auto& cb : callbacks) {
+                        if (!cb || !ev::isFunction(cb->get())) continue;
+                        const Value arg = reqObj.get();
+                        auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+                        if (callRes.thrown) continue;
+                        ev::Persistent retVal(callRes.value);
 
-                    if (ev::isPromise(retVal.get())) {
-                        attachPromiseReaction(
-                            retVal.get(),
-                            [req](Value val) { parseAndFulfillRemoteDesktop(req, val); },
-                            [req](Value) { fulfillRemoteDesktop(req, ResponseCode::Cancelled, 0); });
-                    } else if (ev::isObject(retVal.get())) {
-                        parseAndFulfillRemoteDesktop(req, retVal.get());
+                        if (ev::isPromise(retVal.get())) {
+                            hasPendingPromise = true;
+                            attachPromiseReaction(
+                                retVal.get(),
+                                [req](Value val) {
+                                    parseAndFulfillRemoteDesktop(req, val);
+                                    fulfillRemoteDesktop(req, ResponseCode::OtherError, 0);
+                                },
+                                [req](Value) { fulfillRemoteDesktop(req, ResponseCode::Cancelled, 0); });
+                        } else if (ev::isObject(retVal.get())) {
+                            parseAndFulfillRemoteDesktop(req, retVal.get());
+                        }
+                    }
+                    if (!hasPendingPromise) {
+                        fulfillRemoteDesktop(req, ResponseCode::OtherError, 0);
                     }
                 }
             }

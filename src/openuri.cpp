@@ -1,6 +1,8 @@
 #include "broportal/openuri.h"
 #include "broportal/backend.h"
 
+#include <unistd.h>
+
 namespace broportal {
 
 const sd_bus_vtable OpenURIInterface::vtable[] = {
@@ -112,10 +114,11 @@ int OpenURIInterface::dbus_open_file(sd_bus_message* m, void* userdata, sd_bus_e
         return sd_bus_reply_method_errorf(m, SD_BUS_ERROR_INVALID_ARGS, "Invalid parameters");
     }
 
+    int duped_fd = (ufd.fd >= 0) ? ::dup(ufd.fd) : -1;
     auto req = self->backend_.create_request(handle, app_id);
     sd_bus_message_ref(m);
 
-    self->backend_.post_worker([self, m, req, handle, app_id, parent_window, fd = ufd.fd, options = std::move(options)]() {
+    self->backend_.post_worker([self, m, req, handle, app_id, parent_window, fd = duped_fd, options = std::move(options)]() {
         VariantMap results;
         ResponseCode code = self->open_file(handle, app_id, parent_window, fd, options, results);
 
@@ -123,6 +126,10 @@ int OpenURIInterface::dbus_open_file(sd_bus_message* m, void* userdata, sd_bus_e
             reply_msg.append_uint32(static_cast<uint32_t>(code));
             reply_msg.append_variant_map(results);
         });
+
+        if (fd >= 0) {
+            ::close(fd);
+        }
 
         if (req) req->close();
     });

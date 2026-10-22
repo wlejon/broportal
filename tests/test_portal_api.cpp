@@ -10,6 +10,7 @@
 #include <future>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace broportal;
@@ -296,6 +297,24 @@ int main() {
         std::cout << "  OpenFile req.cancel() [PASS]" << std::endl;
 
         evalScript("globalThis._fc4.dispose()");
+
+        // 4e. Throwing handler and empty handler fulfill with OtherError (2) instead of hanging
+        CHECK(!evalScript("globalThis._fcThrow = bro.portal.onFileChooser(() => { throw new Error('boom'); });").thrown);
+        auto repThrow = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.FileChooser", "OpenFile",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/fc_throw"});
+                    m.append_string("org.example.App");
+                    m.append_string("");
+                    m.append_string("Pick throw");
+                    m.append_variant_map({});
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repThrow.code, 2u);
+        evalScript("globalThis._fcThrow.dispose()");
     }
 
     // 5. Test Screenshot & PickColor
@@ -527,6 +546,29 @@ int main() {
         std::cout << "  OpenURI cancelled [PASS]" << std::endl;
 
         evalScript("globalThis._uri2.dispose()");
+
+        // 7c. OpenFile passes valid duplicated fd to JS handler
+        int pipefds[2] = {-1, -1};
+        REQUIRE(pipe(pipefds) == 0);
+        CHECK(!evalScript("globalThis._seenFd = -1; globalThis._uriFile = bro.portal.onOpenUri((req) => { globalThis._seenFd = req.isFile ? req.fd : -1; return { success: req.fd >= 0 }; });").thrown);
+        auto repFile = callWithPump([&]() {
+            Reply r;
+            f.call("org.freedesktop.impl.portal.OpenURI", "OpenFile",
+                [&](dbus::Message& m) {
+                    m.append_object_path(ObjectPath{"/org/freedesktop/portal/desktop/request/uri_file"});
+                    m.append_string("org.example.App");
+                    m.append_string("");
+                    m.append_unix_fd(UnixFd{pipefds[0]});
+                    m.append_variant_map({});
+                },
+                [&](dbus::Message& reply) { reply.read_uint32(&r.code); reply.read_variant_map(&r.results); });
+            return r;
+        });
+        CHECK_EQ(repFile.code, 0u);
+        CHECK(ev::toDouble(evalScript("globalThis._seenFd").value) >= 0.0);
+        evalScript("globalThis._uriFile.dispose()");
+        close(pipefds[0]);
+        close(pipefds[1]);
     }
 
     // 8. Test Settings

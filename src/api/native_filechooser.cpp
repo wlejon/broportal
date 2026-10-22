@@ -188,23 +188,39 @@ void drainFileChooser() {
         }
     }
 
-    if (toDispatch.empty() || callbacks.empty()) return;
+    if (toDispatch.empty()) return;
+    if (callbacks.empty()) {
+        for (const auto& req : toDispatch) {
+            fulfillFileChooser(req, ResponseCode::OtherError, {});
+        }
+        return;
+    }
 
     for (const auto& req : toDispatch) {
         ev::Persistent reqObj(buildFileChooserRequest(req));
+        bool hasPendingPromise = false;
         for (const auto& cb : callbacks) {
             if (!cb || !ev::isFunction(cb->get())) continue;
             const Value arg = reqObj.get();
-            ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
+            auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+            if (callRes.thrown) continue;
+            ev::Persistent retVal(callRes.value);
 
             if (ev::isPromise(retVal.get())) {
+                hasPendingPromise = true;
                 attachPromiseReaction(
                     retVal.get(),
-                    [req](Value val) { parseAndFulfill(req, val); },
+                    [req](Value val) {
+                        parseAndFulfill(req, val);
+                        fulfillFileChooser(req, ResponseCode::OtherError, {});
+                    },
                     [req](Value) { fulfillFileChooser(req, ResponseCode::Cancelled, {}); });
             } else if (ev::isObject(retVal.get())) {
                 parseAndFulfill(req, retVal.get());
             }
+        }
+        if (!hasPendingPromise) {
+            fulfillFileChooser(req, ResponseCode::OtherError, {});
         }
     }
 }

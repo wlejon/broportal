@@ -189,23 +189,39 @@ void drainScreenCast() {
         }
     }
 
-    if (toDispatch.empty() || callbacks.empty()) return;
+    if (toDispatch.empty()) return;
+    if (callbacks.empty()) {
+        for (const auto& req : toDispatch) {
+            fulfillScreenCast(req, ResponseCode::OtherError, {});
+        }
+        return;
+    }
 
     for (const auto& req : toDispatch) {
         ev::Persistent reqObj(buildScreenCastRequest(req));
+        bool hasPendingPromise = false;
         for (const auto& cb : callbacks) {
             if (!cb || !ev::isFunction(cb->get())) continue;
             const Value arg = reqObj.get();
-            ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
+            auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+            if (callRes.thrown) continue;
+            ev::Persistent retVal(callRes.value);
 
             if (ev::isPromise(retVal.get())) {
+                hasPendingPromise = true;
                 attachPromiseReaction(
                     retVal.get(),
-                    [req](Value val) { parseAndFulfillScreenCast(req, val); },
+                    [req](Value val) {
+                        parseAndFulfillScreenCast(req, val);
+                        fulfillScreenCast(req, ResponseCode::OtherError, {});
+                    },
                     [req](Value) { fulfillScreenCast(req, ResponseCode::Cancelled, {}); });
             } else if (ev::isObject(retVal.get())) {
                 parseAndFulfillScreenCast(req, retVal.get());
             }
+        }
+        if (!hasPendingPromise) {
+            fulfillScreenCast(req, ResponseCode::OtherError, {});
         }
     }
 }

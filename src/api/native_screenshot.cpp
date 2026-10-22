@@ -289,21 +289,37 @@ void drainScreenshot() {
             }
         }
 
-        if (!toDispatch.empty() && !callbacks.empty()) {
-            for (const auto& req : toDispatch) {
-                ev::Persistent reqObj(buildScreenshotRequest(req));
-                for (const auto& cb : callbacks) {
-                    if (!cb || !ev::isFunction(cb->get())) continue;
-                    const Value arg = reqObj.get();
-                    ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
+        if (!toDispatch.empty()) {
+            if (callbacks.empty()) {
+                for (const auto& req : toDispatch) {
+                    fulfillScreenshot(req, ResponseCode::OtherError, "");
+                }
+            } else {
+                for (const auto& req : toDispatch) {
+                    ev::Persistent reqObj(buildScreenshotRequest(req));
+                    bool hasPendingPromise = false;
+                    for (const auto& cb : callbacks) {
+                        if (!cb || !ev::isFunction(cb->get())) continue;
+                        const Value arg = reqObj.get();
+                        auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+                        if (callRes.thrown) continue;
+                        ev::Persistent retVal(callRes.value);
 
-                    if (ev::isPromise(retVal.get())) {
-                        attachPromiseReaction(
-                            retVal.get(),
-                            [req](Value val) { parseAndFulfillScreenshot(req, val); },
-                            [req](Value) { fulfillScreenshot(req, ResponseCode::Cancelled, ""); });
-                    } else if (ev::isObject(retVal.get())) {
-                        parseAndFulfillScreenshot(req, retVal.get());
+                        if (ev::isPromise(retVal.get())) {
+                            hasPendingPromise = true;
+                            attachPromiseReaction(
+                                retVal.get(),
+                                [req](Value val) {
+                                    parseAndFulfillScreenshot(req, val);
+                                    fulfillScreenshot(req, ResponseCode::OtherError, "");
+                                },
+                                [req](Value) { fulfillScreenshot(req, ResponseCode::Cancelled, ""); });
+                        } else if (ev::isObject(retVal.get())) {
+                            parseAndFulfillScreenshot(req, retVal.get());
+                        }
+                    }
+                    if (!hasPendingPromise) {
+                        fulfillScreenshot(req, ResponseCode::OtherError, "");
                     }
                 }
             }
@@ -322,21 +338,37 @@ void drainScreenshot() {
             }
         }
 
-        if (!toDispatch.empty() && !callbacks.empty()) {
-            for (const auto& req : toDispatch) {
-                ev::Persistent reqObj(buildPickColorRequest(req));
-                for (const auto& cb : callbacks) {
-                    if (!cb || !ev::isFunction(cb->get())) continue;
-                    const Value arg = reqObj.get();
-                    ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
+        if (!toDispatch.empty()) {
+            if (callbacks.empty()) {
+                for (const auto& req : toDispatch) {
+                    fulfillPickColor(req, ResponseCode::OtherError, {});
+                }
+            } else {
+                for (const auto& req : toDispatch) {
+                    ev::Persistent reqObj(buildPickColorRequest(req));
+                    bool hasPendingPromise = false;
+                    for (const auto& cb : callbacks) {
+                        if (!cb || !ev::isFunction(cb->get())) continue;
+                        const Value arg = reqObj.get();
+                        auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+                        if (callRes.thrown) continue;
+                        ev::Persistent retVal(callRes.value);
 
-                    if (ev::isPromise(retVal.get())) {
-                        attachPromiseReaction(
-                            retVal.get(),
-                            [req](Value val) { parseAndFulfillPickColor(req, val); },
-                            [req](Value) { fulfillPickColor(req, ResponseCode::Cancelled, {}); });
-                    } else if (ev::isObject(retVal.get())) {
-                        parseAndFulfillPickColor(req, retVal.get());
+                        if (ev::isPromise(retVal.get())) {
+                            hasPendingPromise = true;
+                            attachPromiseReaction(
+                                retVal.get(),
+                                [req](Value val) {
+                                    parseAndFulfillPickColor(req, val);
+                                    fulfillPickColor(req, ResponseCode::OtherError, {});
+                                },
+                                [req](Value) { fulfillPickColor(req, ResponseCode::Cancelled, {}); });
+                        } else if (ev::isObject(retVal.get())) {
+                            parseAndFulfillPickColor(req, retVal.get());
+                        }
+                    }
+                    if (!hasPendingPromise) {
+                        fulfillPickColor(req, ResponseCode::OtherError, {});
                     }
                 }
             }

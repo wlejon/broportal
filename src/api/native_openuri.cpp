@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <unistd.h>
 #include <vector>
 
 namespace broportal::api {
@@ -23,6 +24,12 @@ struct QueuedOpenUriRequest {
     bool answered = false;
     ResponseCode response_code = ResponseCode::OtherError;
     VariantMap out_results;
+
+    ~QueuedOpenUriRequest() {
+        if (fd >= 0) {
+            ::close(fd);
+        }
+    }
 };
 
 struct HandlerEntry {
@@ -148,7 +155,7 @@ ResponseCode handleNativeOpenFile(
     req->handle = handle;
     req->app_id = app_id;
     req->uri = "";
-    req->fd = fd;
+    req->fd = (fd >= 0) ? ::dup(fd) : -1;
     req->options = options;
 
     {
@@ -195,23 +202,39 @@ void drainOpenUri() {
         }
     }
 
-    if (toDispatch.empty() || callbacks.empty()) return;
+    if (toDispatch.empty()) return;
+    if (callbacks.empty()) {
+        for (const auto& req : toDispatch) {
+            fulfillOpenUri(req, ResponseCode::OtherError, {});
+        }
+        return;
+    }
 
     for (const auto& req : toDispatch) {
         ev::Persistent reqObj(buildOpenUriRequest(req));
+        bool hasPendingPromise = false;
         for (const auto& cb : callbacks) {
             if (!cb || !ev::isFunction(cb->get())) continue;
             const Value arg = reqObj.get();
-            ev::Persistent retVal(ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1)).value);
+            auto callRes = ev::call(cb->get(), ev::undefined(), std::span<const Value>(&arg, 1));
+            if (callRes.thrown) continue;
+            ev::Persistent retVal(callRes.value);
 
             if (ev::isPromise(retVal.get())) {
+                hasPendingPromise = true;
                 attachPromiseReaction(
                     retVal.get(),
-                    [req](Value val) { parseAndFulfillOpenUri(req, val); },
+                    [req](Value val) {
+                        parseAndFulfillOpenUri(req, val);
+                        fulfillOpenUri(req, ResponseCode::OtherError, {});
+                    },
                     [req](Value) { fulfillOpenUri(req, ResponseCode::Cancelled, {}); });
             } else if (ev::isObject(retVal.get())) {
                 parseAndFulfillOpenUri(req, retVal.get());
             }
+        }
+        if (!hasPendingPromise) {
+            fulfillOpenUri(req, ResponseCode::OtherError, {});
         }
     }
 }
