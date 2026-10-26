@@ -1,6 +1,5 @@
 add_library(broportal_api STATIC
     api.cpp
-    host_class.cpp
 )
 
 # The handler bridges queue requests from the D-Bus backend, which exists only
