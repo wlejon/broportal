@@ -28,7 +28,7 @@ concurrency:
 # holds the library to saying why it cannot serve portals there.
 env:
   LINUX_PACKAGES: >-
-    ninja-build pkg-config libsystemd-dev dbus-daemon dbus-bin libglib2.0-bin xdg-desktop-portal
+    ninja-build ccache pkg-config libsystemd-dev dbus-daemon dbus-bin libglib2.0-bin xdg-desktop-portal
 
 jobs:
   test:
@@ -57,21 +57,50 @@ jobs:
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+        run: brew install ninja ccache
+
+      - name: ccache
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: MSVC developer command prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: sccache (Windows)
+        if: runner.os == 'Windows'
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
+          SCCACHE_GHA_ENABLED: "true"
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -S broportal -B build
+            cmake -S broportal -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+              -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
+              -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
           else
-            cmake -S broportal -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+            cmake -S broportal -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           fi
 
       - name: Build
+        env:
+          SCCACHE_GHA_ENABLED: "true"
         run: cmake --build build --config ${{ matrix.config }} --parallel 4
 
       - name: Test
@@ -94,11 +123,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends gcovr $LINUX_PACKAGES
 
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: coverage
+
       - name: Configure (instrumented)
         run: |
           cmake -S broportal -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DBROPORTAL_COVERAGE=ON
+            -DBROPORTAL_COVERAGE=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build --parallel 4

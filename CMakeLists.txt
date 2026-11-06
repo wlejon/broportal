@@ -30,18 +30,6 @@ endif()
 
 option(BROPORTAL_BUILD_TESTS "Build the broportal tests" ${_broportal_top_level})
 
-# Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
-# broportal has no business having its own build instrumented from in here.
-option(BROPORTAL_COVERAGE "Instrument the build for gcov coverage (GCC/Clang)" OFF)
-if(BROPORTAL_COVERAGE AND _broportal_top_level)
-    if(MSVC)
-        message(FATAL_ERROR "BROPORTAL_COVERAGE requires GCC or Clang (gcov instrumentation)")
-    endif()
-    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
-    add_link_options(--coverage)
-    message(STATUS "broportal: coverage instrumentation ON (-O0)")
-endif()
-
 # MSVC runtime: the default, the DLL CRT (/MD, /MDd), as bro builds with. The
 # api's tests load bronze_runtime_shared.dll and pass std::string and vectors
 # across that boundary; with the static CRT each module has its own heap, and
@@ -91,6 +79,32 @@ else()
     message(STATUS "broportal: not Linux; building the value types and broportal::available() only")
 endif()
 
+# --- Standalone Bronze JavaScript API ---
+# On by default only when broportal is the top-level project. A library that
+# consumes broportal then never needs bronze checked out; bro, which does want
+# the binding, sets BROPORTAL_ENABLE_API ON itself.
+option(BROPORTAL_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
+if(BROPORTAL_ENABLE_API)
+    # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
+    # outer project's target, else ../bronze beside the top-level project, else
+    # the head of its main, fetched at configure. Resolved before BROPORTAL_COVERAGE
+    # so coverage builds do not instrument bronze/brass.
+    bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
+                   OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
+endif()
+
+# Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
+# broportal has no business having its own build instrumented from in here.
+option(BROPORTAL_COVERAGE "Instrument the build for gcov coverage (GCC/Clang)" OFF)
+if(BROPORTAL_COVERAGE AND _broportal_top_level)
+    if(MSVC)
+        message(FATAL_ERROR "BROPORTAL_COVERAGE requires GCC or Clang (gcov instrumentation)")
+    endif()
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
+    add_link_options(--coverage)
+    message(STATUS "broportal: coverage instrumentation ON (-O0)")
+endif()
+
 add_library(broportal STATIC ${BROPORTAL_SOURCES})
 add_library(broportal::broportal ALIAS broportal)
 
@@ -108,18 +122,7 @@ if(BROPORTAL_LINUX)
     target_link_libraries(broportal PUBLIC PkgConfig::SYSTEMD brodbus::brodbus)
 endif()
 
-# --- Standalone Bronze JavaScript API ---
-# On by default only when broportal is the top-level project. A library that
-# consumes broportal then never needs bronze checked out; bro, which does want
-# the binding, sets BROPORTAL_ENABLE_API ON itself.
-option(BROPORTAL_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BROPORTAL_ENABLE_API)
-    # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
-    # outer project's target, else ../bronze beside the top-level project, else
-    # the head of its main, fetched at configure.
-    bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
-                   OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
-
     add_subdirectory(src/api)
 endif()
 

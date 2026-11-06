@@ -21,6 +21,7 @@ target_include_directories(broportal_api PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>
+    $<TARGET_PROPERTY:brass,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 target_link_libraries(broportal_api PUBLIC

@@ -4,13 +4,13 @@
 #include "check.h"
 #if defined(__linux__)
 #include "fixture.h"
+#include <unistd.h>
 #endif
 
 #include <chrono>
 #include <future>
 #include <iostream>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 using namespace broportal;
